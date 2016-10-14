@@ -1,31 +1,33 @@
 'use strict';
 
 var __ = require('underscore'),
+    $ = require('jquery'),
     Backbone = require('backbone'),
-    $ = require('jquery');
-Backbone.$ = $;
-var loadTemplate = require('../utils/loadTemplate'),
-    baseVw = require('./baseVw'),
+    loadTemplate = require('../utils/loadTemplate'),
+    app = require('../App.js').getApp(),
+    pageVw = require('./pageVw'),
     itemShortView = require('./itemShortVw'),
     itemShortModel = require('../models/itemShortMd'),
     userShortView = require('./userShortVw'),
     userShortModel = require('../models/userShortMd'),
-    messageModal = require('../utils/messageModal.js');
+    Dialog = require('../views/dialog.js');
 
-module.exports = baseVw.extend({
+module.exports = pageVw.extend({
 
-  className:"homeView",
+  className: "homeView contentWrapper",
 
   events: {
     'click .js-productsTab': function(){this.setState("products");},
-    'click .js-feedTab': function(){this.setState("feed");},
     'click .js-vendorsTab': function(){this.setState("vendors");},
     'click .js-homeCreateStore': 'createStore',
     'click .js-homeCreateListing': 'createListing',
-    'click .js-homeSearchItemsClear': 'searchItemsClear',
+    'click .js-homeSearchItemsClear': 'onSearchItemsClear',
     'keyup .js-homeSearchItems': 'searchItemsKeyup',
+    'focus .js-homeSearchItems': 'searchItemsFocus',
+    'blur .js-homeSearchItems': 'searchItemsBlur',
     'click .js-homeListingsFollowed': 'clickListingsFollowed',
-    'click .js-homeListingsAll': 'clickListingsAll'
+    'click .js-homeListingsAll': 'clickListingsAll',
+    'click .backToTop': 'clickBackToTop'
   },
 
   initialize: function(options){
@@ -35,7 +37,7 @@ module.exports = baseVw.extend({
     this.userModel = options.userModel;
     this.userProfile = options.userProfile;
     this.socketView = options.socketView;
-    this.state = options.state;
+    this.state = options.state || 'products';
     this.searchItemsText = options.searchItemsText;
     this.slimVisible = false;
     this.itemViews = [];
@@ -47,6 +49,8 @@ module.exports = baseVw.extend({
     this.ownFollowing = [];
     this.onlyFollowing = true;
     this.showNSFW = JSON.parse(localStorage.getItem('NSFWFilter'));
+    this.cachedScrollPositions = {};
+    this.loadedUsers = [];
 
     this.model.set({user: this.options.userModel.toJSON(), page: this.userProfile.toJSON()});
 
@@ -67,6 +71,48 @@ module.exports = baseVw.extend({
     });
 
     this.fetchOwnFollowing(this.render());
+
+    this.listenTo(app.router, 'cache-will-detach', this.onCacheWillDetach);
+    this.listenTo(app.router, 'cache-detached', this.onCacheDetached);
+    this.listenTo(app.router, 'cache-reattached', this.onCacheReattached);
+  },
+
+  onCacheReattached: function(e) {
+    var splitRoute = e.route.split('/'),
+        state = splitRoute[1],
+        searchTerm = splitRoute[2];
+
+    if (e.view !== this) return;
+    state = state || this.state;
+
+    if (this.cachedScrollPositions[state]) {
+      this.obContainer[0].scrollTop = this.cachedScrollPositions[state];
+    }
+
+    this.setState(state);
+
+    if (searchTerm && searchTerm !== this.searchItemsText) {
+      this.searchItems(searchTerm);
+      this.obContainer[0].scrollTop = 0;
+    }
+
+    this.obContainer.on('scroll', this.scrollHandler);
+  },
+
+  onCacheWillDetach: function(e) {
+    if (e.view !== this) return;
+
+    this.cachedScrollPositions[this.state] = this.obContainer[0].scrollTop;
+  },
+
+  onCacheDetached: function(e) {
+    if (e.view !== this) return;
+
+    if (this.safeListingsDialog) {
+      this.safeListingsDialog.close();
+    }
+
+    this.obContainer.off('scroll', this.scrollHandler);
   },
 
   fetchOwnFollowing: function(callback){
@@ -94,7 +140,7 @@ module.exports = baseVw.extend({
     this.$el.find('.js-loadingMessage .spinner').removeClass('fadeOut');
     this.$el.find('.js-loadingMessage').removeClass('fadeOut');
     this.socketTimeout = window.setTimeout(function(){
-        self.$el.find('.js-loadingMessage').addClass('fadeOut');
+      self.$el.find('.js-loadingMessage').addClass('fadeOut');
     }, 8000);
 
     // after 8 seconds, if no listings are found, display the no results found message
@@ -102,9 +148,16 @@ module.exports = baseVw.extend({
       if ($('.homeGridItems .gridItem').length === 0){
         self.$el.find('.js-loadingMessage').removeClass('fadeOut');
         self.$el.find('.js-loadingMessage .spinner').addClass('fadeOut');
-        self.$el.find('.js-loadingText').html(
-          window.polyglot.t('discover.' + (self.searchItemsText ? 'noTaggedResults' : 'noResults'))
-        );
+
+        if (self.searchItemsText) {
+          self.$el.find('.js-loadingText').html(
+            window.polyglot.t('discover.noTaggedResults')
+              .replace('%{tag}', `<span class="btn-pill color-secondary">#${self.searchItemsText}</span>`)
+          );
+        } else {
+          self.$el.find('.js-loadingText')
+            .html(window.polyglot.t('discover.noResults'));
+        }
       }
     }, 10000);
   },
@@ -115,8 +168,8 @@ module.exports = baseVw.extend({
   },
 
   hideList: function(){
-    $('.js-feed, .js-products, .js-vendors, .js-productsSearch').addClass('hide');
-    $('.js-productsTab, .js-vendorsTab, .js-feedTab').removeClass('active');
+    this.$('.js-products, .js-vendors, .js-productsSearch').addClass('hide');
+    this.$('.js-productsTab, .js-vendorsTab').removeClass('active');
   },
 
   resetLookingCount: function(){
@@ -125,70 +178,82 @@ module.exports = baseVw.extend({
 
   handleSocketMessage: function(response) {
     var data = JSON.parse(response.data);
-    if(data.id == this.socketSearchID) {
+    if (data.id == this.socketSearchID) {
       this.renderItem(data);
-    } else if(data.id == this.socketItemsID){
+    } else if (data.id == this.socketItemsID){
       this.loadingProducts = false;
       this.renderItem(data);
-    } else if(data.id == this.socketUsersID) {
+    } else if (data.id == this.socketUsersID) {
       this.loadingVendors = false;
       this.renderUser(data.vendor);
     }
-    
+
     this.resetLookingCount();
   },
 
   render: function(){
     var self = this;
-    $('#content').html(this.$el);
-    loadTemplate('./js/templates/home.html', function(loadedTemplate) {
-      self.$el.html(loadedTemplate());
-      self.setState(self.state, self.searchItemsText);
-      if(self.model.get('page').profile.vendor == true) {
-        self.$el.find('.js-homeCreateStore').addClass('hide');
-        self.$el.find('.js-homeMyPage').addClass('show');
-        self.$el.find('.js-homeCreateListing').addClass('show');
-      }else{
-        self.$el.find('.js-homeCreateStore').addClass('show');
-        self.$el.find('.js-homeCreateListing').addClass('hide');
-      }
 
-      //get vendors and items
-      self.loadingVendors = true;
-      self.socketView.getVendors(self.socketUsersID);
-      //set the filter
-      if(localStorage.getItem('homeShowAll') == "yes"){
-        self.setListingsAll();
-        self.loadAllItems();
-      } else {
-        self.setListingsFollowed();
-        self.loadFollowedItems();
-      }
+    loadTemplate('./js/templates/backToTop.html', function(backToTopTmpl) {
+      loadTemplate('./js/templates/home.html', function(loadedTemplate) {
+        self.$el.html(loadedTemplate({
+          backToTopTmpl: backToTopTmpl
+        }));
 
-      //listen to scrolling on container
-      self.scrollHandler = __.bind(
-        __.throttle(self.onScroll, 100),
-        self
-      );
-      self.obContainer.on('scroll', self.scrollHandler);
+        self.listingToggle = self.$('.js-homeListingToggle');
 
-      //populate search field
-      if(self.searchItemsText){
-        self.$el.find('.js-homeSearchItems').val("#" + self.searchItemsText);
-        $('#obContainer').scrollTop(0);
-      }
+        self.setState(self.state, self.searchItemsText);
+        if(self.model.get('page').profile.vendor == true) {
+          self.$el.find('.js-homeCreateStore').addClass('hide');
+          self.$el.find('.js-homeMyPage').addClass('show');
+          self.$el.find('.js-homeCreateListing').addClass('show');
+        }else{
+          self.$el.find('.js-homeCreateStore').addClass('show');
+          self.$el.find('.js-homeCreateListing').addClass('hide');
+        }
 
+        //get vendors and items
+        self.loadingVendors = true;
+        self.socketView.getVendors(self.socketUsersID);
+        //set the filter
+        if(localStorage.getItem('homeShowAll') == "yes"){
+          self.setListingsAll();
+          self.loadAllItems();
+        } else {
+          self.setListingsFollowed();
+          self.loadFollowedItems();
+        }
 
+        //listen to scrolling on container
+        self.scrollHandler = __.bind(
+          __.throttle(self.onScroll, 100),
+          self
+        );
+        self.obContainer.on('scroll', self.scrollHandler);
 
+        //populate search field
+        if (self.searchItemsText){
+          self.$el.find('.js-homeSearchItems').val("#" + self.searchItemsText);
+          self.listingToggle.addClass('hide');
+          $('#obContainer').scrollTop(0);
+        }
+
+        self.$backToTop = self.$('.backToTop');
+      });
     });
   },
 
   renderItem: function(item){
     var self = this,
-        blocked;
+        blocked,
+        addressCountries = this.userModel.get('shipping_addresses').map(function(address){ return address.country; }),
+        userCountry = this.userModel.get('country'),
+        contract_type = item.contract_type;
+
+    addressCountries.push(userCountry);
 
     //don't show if NSFW and filter is set to false
-    if(item.listing.nsfw && !this.showNSFW) return;
+    if (item.listing.nsfw && !this.showNSFW) return;
     //get data from inside the listing object
     item = item.listing;
     item.userCurrencyCode = this.userModel.get('currency_code');
@@ -198,11 +263,13 @@ module.exports = baseVw.extend({
     item.userID = item.guid;
     item.discover = true;
     item.ownGuid = this.userModel.get('guid');
+    item.userCountries = addressCountries;
+    item.contract_type = contract_type;
 
 
     item.ownFollowing = this.ownFollowing.indexOf(item.guid) != -1;
 
-    blocked = this.userModel.get('blocked_guids') || [];    
+    blocked = this.userModel.get('blocked_guids') || [];
     item.isBlocked = blocked.indexOf(item.guid) !== -1;
 
     var newItem = function(){
@@ -217,7 +284,7 @@ module.exports = baseVw.extend({
       newItemModel = new itemShortModel(item);
       itemShort = new itemShortView({model: newItemModel});
 
-      self.listenTo(newItemModel, 'change:isBlocked', function(model, isBlocked, options) {
+      self.listenTo(newItemModel, 'change:isBlocked', function(model, isBlocked) {
         if (isBlocked) {
           self.removeItemView(itemShort);
           self.setListingsBlockedCount(self.getListingsBlockedCount() + 1);
@@ -233,8 +300,8 @@ module.exports = baseVw.extend({
       self.itemViews.push(itemShort);
     };
 
-    if(this.onlyFollowing){
-      if(item.ownFollowing){
+    if (this.onlyFollowing){
+      if (item.ownFollowing){
         newItem();
       }
     } else {
@@ -244,54 +311,58 @@ module.exports = baseVw.extend({
 
   renderUser: function(user){
     var self = this,
-        blocked = this.userModel.get('blocked_guids') || [];
+        blocked = this.userModel.get('blocked_guids') || [],
+        newUserModel,
+        storeShort;
+
+    //don't load duplicates
+    if (this.loadedUsers.indexOf(user.guid) !== -1){
+      return;
+    }
+    this.loadedUsers.push(user.guid);
 
     if (blocked.indexOf(user.guid) !== -1) return;
 
-    if(user.nsfw && !this.showNSFW) return;
+    if (user.nsfw && !this.showNSFW) return;
 
-    if(!user.name) return; //if user has no name, they probably don't have a profile
+    if (!user.name) return; //if user has no name, they probably don't have a profile
 
     user.serverUrl = this.userModel.get('serverUrl');
     user.userID = user.guid;
     user.avatarURL = this.userModel.get('serverUrl')+"get_image?hash="+user.avatar_hash+"&guid="+user.guid;
-    
-    if(this.ownFollowing.indexOf(user.guid) != -1){
-      user.ownFollowing = true;
-    }
+    user.ownFollowing = this.ownFollowing.indexOf(user.guid) != -1;
 
-    var newUserModel = new userShortModel(user);
+    newUserModel = new userShortModel(user);
+    storeShort = new userShortView({model: newUserModel});
 
-    this.listenTo(newUserModel, 'change:isBlocked', function(model, isBlocked, options) {
+    this.listenTo(newUserModel, 'change:isBlocked', function(model, isBlocked) {
       if (isBlocked) {
         self.removeUserView(storeShort);
       }
     });
 
-    var storeShort = new userShortView({model: newUserModel});
     this.$el.find('.js-vendors .js-loadingSpinner').before(storeShort.el);
     this.registerChild(storeShort);
     this.userViews.push(storeShort);
   },
 
   setState: function(state, searchItemsText){
-    if(!state){
+    var searchTextFrag;
+
+    if (!state){
       state = "products";
     }
+
     this.hideList();
     this.$el.find('.js-' + state).removeClass('hide');
     this.$el.find('.js-' + state + 'Tab').addClass('active');
     this.$el.find('.js-' + state + 'Search').removeClass('hide');
 
-    if(searchItemsText){
-      this.searchItemsText = searchItemsText;
+    if (searchItemsText) this.searchItemsText = searchItemsText;
+    searchTextFrag = this.searchItemsText ? `/${this.searchItemsText.replace(/ /g, "")}` : '';
 
-      //add action to history
-      Backbone.history.navigate("#home/" + state + "/" + searchItemsText.replace(/ /g, ""));
-    } else {
-      //add action to history
-      Backbone.history.navigate("#home/" + state);
-    }
+    //add action to history
+    Backbone.history.navigate("#home/" + state + searchTextFrag, { replace: true });
 
     this.state = state;
   },
@@ -327,7 +398,7 @@ module.exports = baseVw.extend({
     }
 
     //don't follow if this is the user's own guid
-    if(options.guid == this.options.userModel.get('guid')){
+    if (options.guid == this.options.userModel.get('guid')){
       return;
     }
 
@@ -336,7 +407,7 @@ module.exports = baseVw.extend({
       data: {'guid': options.guid},
       dataType: 'json',
       url: this.options.userModel.get('serverUrl') + (follow ? "follow" : "unfollow"),
-      success: function(data) {
+      success: function() {
         options.target.closest('.js-userShortView').removeClass('div-fade');
         follow ? self.addFollower(options.guid) : self.removeFollower(options.guid);
 
@@ -347,15 +418,12 @@ module.exports = baseVw.extend({
           // filter, let's remove all the views for the guid
           // that we've just unfollowed.
           if (!follow && self.onlyFollowing) {
-            __.each(self.itemViews, function(item, i) {
+            __.each(self.itemViews, function(item) {
               if (item.model.get('guid') === options.guid) {
                 self.removeItemView(item);
               }
             });
           }
-        } else if (self.state == 'vendors') {
-          //self.loadItemsOrSearch();
-          //do nothing, stay on page
         }
       },
       error: function(jqXHR, status, errorThrown){
@@ -363,7 +431,7 @@ module.exports = baseVw.extend({
         console.log(status);
         console.log(errorThrown);
       }
-    });    
+    });
   },
 
   followUser: function(options){
@@ -380,19 +448,36 @@ module.exports = baseVw.extend({
 
   unblockUserClick: function(e) {
     this.userModel.unblockUser(e.view.model.get('guid'));
-  },  
+  },
+
+  clickBackToTop: function() {
+    this.obContainer.animate({ scrollTop: 0 }, {
+      complete: () => {
+        this.$backToTop.removeClass('slideUp');
+      }
+    });
+  },
 
   onScroll: function(){
-    if(this.obContainer[0].scrollTop + this.obContainer[0].clientHeight + 200 > this.obContainer[0].scrollHeight && !this.searchItemsText){
-      if(this.state == "products" && !this.loadingProducts){
+    if (this.obContainer[0].scrollTop + this.obContainer[0].clientHeight + 200 > this.obContainer[0].scrollHeight && !this.searchItemsText){
+      if (this.state == "products" && !this.loadingProducts){
         this.setSocketTimeout();
         this.loadingProducts = true;
         this.socketView.getItems(this.socketItemsID, this.onlyFollowing);
-      } else if(this.state == "vendors" && !this.loadingVendors){
+      } else if (this.state == "vendors" && !this.loadingVendors){
         this.setSocketTimeout();
         this.loadingVendors = true;
         this.socketView.getVendors(this.socketUsersID);
       }
+    }
+
+    if (
+      this.state === "products" && this.obContainer[0].scrollTop > 180 ||
+      this.state === "vendors" && this.obContainer[0].scrollTop > 140
+    ) {
+      this.$backToTop.addClass('slideUp');
+    } else {
+      this.$backToTop.removeClass('slideUp');
     }
   },
 
@@ -413,53 +498,76 @@ module.exports = baseVw.extend({
     this.userViews = [];
   },
 
+  searchItemsFocus: function(){
+    this.listingToggle.addClass('hide');
+  },
+
+  searchItemsBlur: function(){
+    if (!this.searchItemsText){
+      this.listingToggle.removeClass('hide');
+    }
+  },
+
   searchItemsKeyup: function(e){
     var target = $(e.target),
-        targetText = target.val().replace("#",'').replace(/ /g, ""),
+        targetText = target.val().replace("#", '').replace(/ /g, ""),
         addressText = targetText;
 
-    if(e.keyCode == 13){
+    if (e.keyCode == 13){
       this.searchItems(targetText);
       addressText = addressText ? "#" + addressText.replace(/\s+/g, '') : "";
       target.val(addressText);
       window.obEventBus.trigger("setAddressBar", {'addressText': addressText});
-    }
-
-    if(target.val() == ""){
-      this.searchItemsClear();
+    } else if (e.keyCode == 8 || e.keyCode == 46) {
+      if (target.val() == "") {
+        this.searchItemsClear();
+      }
     }
   },
 
-  searchItemsClear: function(){
-    this.setState("products");
+  onSearchItemsClear: function() {
+    this.searchItemsClear();
+  },
+
+  searchItemsClear: function(state){
+    this.searchItemsText = '';
+    this.setState(state || 'products');
     this.loadItems();
 
     //clear address bar
     window.obEventBus.trigger("setAddressBar", {'addressText': ""});
-    
+
     this.$el.find('.js-discoverHeading').html(window.polyglot.t('Discover'));
+    this.listingToggle.removeClass('hide');
 
     // change loading text copy
     this.$el.find('.js-loadingText').html(this.$el.find('.js-loadingText').data('defaultText'));
-    this.$el.find('.js-discoverSearchKeyword').addClass('hide');
+    // this.$el.find('.js-discoverSearchKeyword').addClass('hide');
 
   },
 
   searchItems: function(searchItemsText){
-    if(searchItemsText){
+    if (searchItemsText){
+      var hashedItem = "#" + searchItemsText;
+
+      window.obEventBus.trigger('searchingText', hashedItem);
+
       this.searchItemsText = searchItemsText;
       this.clearItems();
       this.socketItemsID = "";
       this.socketSearchID = Math.random().toString(36).slice(2);
       this.socketView.search(this.socketSearchID, searchItemsText);
-      this.setSocketTimeout();      
-      this.$el.find('.js-discoverSearchKeyword').html("#" + searchItemsText);
-      this.$el.find('.js-discoverHeading').html("#" + searchItemsText);
-      this.$el.find('.js-loadingText').html(this.$el.find('.js-loadingText').data('searchingText'));
-      this.$el.find('.js-discoverSearchKeyword').removeClass('hide');
+      this.setSocketTimeout();
+      this.$el.find('.js-discoverHeading').html(hashedItem);
+      this.$el.find('.js-loadingText').html(
+        this.$el.find('.js-loadingText')
+          .data('searchingText')
+          .replace('%{tag}', `<span class="btn-pill color-secondary">${hashedItem}</span>`)
+      );
       this.$el.find('.js-homeSearchItemsClear').removeClass('hide');
+      this.$el.find('.js-homeSearchItems').val("#" + searchItemsText);
       this.setState('products', searchItemsText);
-    }else{
+    } else {
       this.searchItemsClear();
     }
   },
@@ -481,7 +589,7 @@ module.exports = baseVw.extend({
     count = count || 0;
     if (this._blockedItemCount === count) return;
     this._blockedItemCount = count;
-    
+
     if (count) {
       text = count + ' blocked item' + (count !== 1 ? 's' : '') + ' not shown';
     }
@@ -519,7 +627,7 @@ module.exports = baseVw.extend({
   },
 
   setListingsAll: function(){
-    if(localStorage.getItem('safeListingsWarningDissmissed')) {
+    if (localStorage.getItem('safeListingsWarningDissmissed')) {
       this.$('.js-homeListingsAll').addClass('active');
       this.$('.js-homeListingsFollowed').removeClass('active');
     }
@@ -533,35 +641,39 @@ module.exports = baseVw.extend({
   },
 
   loadAllItems: function(){
-    var self = this;
-    if(localStorage.getItem('safeListingsWarningDissmissed')){
+    if (localStorage.getItem('safeListingsWarningDissmissed')){
       this.onlyFollowing = false;
       this.loadItemsOrSearch();
     } else {
-      messageModal.show(
-          polyglot.t('ViewUnfilteredListings'),
-          polyglot.t('AllListingsWarning'),
-          'modal-hero bg-dark-blue iconBackground',
-          'modal-msg custCol-secondary',
-          function(){
-            messageModal.hide();
-          },
-          polyglot.t('Cancel'),
-          'txt-center',
-          function(){
-            localStorage.setItem('safeListingsWarningDissmissed', true);
-            self.loadAllItems();
-            messageModal.hide();
-            self.setListingsAll();
-          },
-          polyglot.t('ShowUnlfilteredListings'),
-          'txt-center'
-      );
+      this.safeListingsDialog = new Dialog({
+        title: window.polyglot.t('ViewUnfilteredListings'),
+        message: window.polyglot.t('AllListingsWarning'),
+        titleClass: 'modal-hero bg-dark-blue iconBackground',
+        messageClass: 'modal-msg custCol-secondary',
+        buttons: [{
+          text: window.polyglot.t('Cancel'),
+          fragment: 'cancel'
+        }, {
+          text: window.polyglot.t('ShowUnlfilteredListings'),
+          fragment: 'showUnlfilteredListings'
+        }]
+      }).on('click-cancel', () => {
+        this.safeListingsDialog.close();
+      }).on('click-showUnlfilteredListings', () => {
+        localStorage.setItem('safeListingsWarningDissmissed', true);
+        this.$('.js-discoverToggleHelper').addClass('hide');
+        this.loadAllItems();
+        this.safeListingsDialog.close();
+        this.setListingsAll();
+      });
+
+      this.safeListingsDialog.render().open();
+      setTimeout(() => this.registerChild(this.safeListingsDialog));
     }
   },
 
   loadItemsOrSearch: function(){
-    if(this.searchItemsText){
+    if (this.searchItemsText){
       this.searchItems(this.searchItemsText);
     } else {
       this.loadItems();
@@ -594,6 +706,6 @@ module.exports = baseVw.extend({
   remove: function() {
     this.clearSocketTimeout();
     this.scrollHandler && this.obContainer.off('scroll', this.scrollHandler);
-    baseVw.prototype.remove.apply(this, arguments);
+    pageVw.prototype.remove.apply(this, arguments);
   }
 });

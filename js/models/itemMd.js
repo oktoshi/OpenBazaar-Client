@@ -1,8 +1,11 @@
+'use strict';
+
 var __ = require('underscore'),
-    Backbone = require('backbone'),
     getBTPrice = require('../utils/getBitcoinPrice'),
+    app = require('../App').getApp(),
     countriesMd = require('./countriesMd'),
-    autolinker = require( '../utils/customLinker');
+    autolinker = require( '../utils/customLinker'),
+    sanitizeModel = require('../utils/sanitizeModel');
 
 module.exports = window.Backbone.Model.extend({
   defaults: {
@@ -21,8 +24,6 @@ module.exports = window.Backbone.Model.extend({
     userCountry: "", //set by userPage View. This is a country code. This is used for editing.
     ownPage: false, //set by userPage View
     itemHash: "", //set by userPage View
-    combinedImagesArray: [], //tracks uploaded and old images
-    imageHashesToUpload: [],
     priceSet: 0, //set in Update Attribute below, so view can listen for it
 
     //the object below is just a reference for a typical response from the server.
@@ -39,12 +40,12 @@ module.exports = window.Backbone.Model.extend({
           },
           "shipping_origin": "",
           "flat_fee": {
-              "fiat": {
-                  "price": {
-                    "international": 0,
-                    "domestic": 0
-                  }
+            "fiat": {
+              "price": {
+                "international": 0,
+                "domestic": 0
               }
+            }
           },
           "free": false
         },
@@ -105,39 +106,41 @@ module.exports = window.Backbone.Model.extend({
   },
 
   parse: function(response) {
-    "use strict";
-    var self = this;
     //when vendor currency code is in bitcoins, the json returned is different. Put the value in the expected place so the templates don't break.
     //check to make sure a blank result wasn't returned from the server
-    if(response.vendor_offer){
-      if(response.vendor_offer.listing.item.price_per_unit.bitcoin){
+    if (response.vendor_offer){
+
+      //sanitize html
+      response.vendor_offer = sanitizeModel(response.vendor_offer);
+
+      if (response.vendor_offer.listing.item.price_per_unit.bitcoin){
         response.vendor_offer.listing.item.price_per_unit.fiat = {
           "price": response.vendor_offer.listing.item.price_per_unit.bitcoin,
           "currency_code": "BTC"
         };
       }
       //if the shipping section is not returned it breaks the edit template. Restore it here
-      if(!response.vendor_offer.listing.shipping){
+      if (!response.vendor_offer.listing.shipping){
         response.vendor_offer.listing.shipping = {
           "shipping_regions": [],
-              "est_delivery": {
+          "est_delivery": {
             "international": "",
-                "domestic": ""
+            "domestic": ""
           },
           "shipping_origin": "",
-            "flat_fee": {
-              "fiat": {
-                "price": {
-                  "international": "",
-                  "domestic": ""
-                }
+          "flat_fee": {
+            "fiat": {
+              "price": {
+                "international": "",
+                "domestic": ""
               }
-            },
-            "free": true
-          };
-        }
+            }
+          },
+          "free": true
+        };
+      }
       //if the shipping flat_fee  section is not returned it breaks the edit template. Restore it here
-      if(!response.vendor_offer.listing.shipping.flat_fee){
+      if (!response.vendor_offer.listing.shipping.flat_fee){
         response.vendor_offer.listing.shipping.flat_fee = {
           "fiat": {
             "price": {
@@ -147,7 +150,7 @@ module.exports = window.Backbone.Model.extend({
           }
         };
       }
-      if(!response.vendor_offer.listing.shipping.free == true && response.vendor_offer.listing.shipping.flat_fee){
+      if (!response.vendor_offer.listing.shipping.free == true && response.vendor_offer.listing.shipping.flat_fee){
         if (response.vendor_offer.listing.shipping.flat_fee.bitcoin){
           response.vendor_offer.listing.shipping.flat_fee.fiat = {
             price: {
@@ -159,7 +162,7 @@ module.exports = window.Backbone.Model.extend({
         }
       }
       //make sure policy exists
-      if(!response.vendor_offer.listing.policy){
+      if (!response.vendor_offer.listing.policy){
         response.vendor_offer.listing.policy = {
           "terms_conditions": "",
           "returns": ""
@@ -169,32 +172,6 @@ module.exports = window.Backbone.Model.extend({
       response.vendor_offer.listing.item.image_hashes = response.vendor_offer.listing.item.image_hashes.filter(function(hash){
         return hash !== "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb" && hash.length === 40;
       });
-      //add pretty country names to shipping regions
-      response.vendor_offer.listing.shipping.shipping_regionsDisplay = [];
-      __.each(response.vendor_offer.listing.shipping.shipping_regions, function(region, i){
-        if(region == "ALL"){
-          response.vendor_offer.listing.shipping.shipping_regionsDisplay = [window.polyglot.t('WorldwideShipping')];
-          response.worldwide = true;
-          return;
-        } else {
-          response.worldwide = false;
-        }
-        var matchedCountry = self.countryArray.filter(function(value){
-          return value.dataName == region;
-        });
-        if(matchedCountry[0]){
-          response.vendor_offer.listing.shipping.shipping_regionsDisplay.push(matchedCountry[0].name);
-        }
-
-      });
-
-      //find the human readable name for the country of origin
-      if(response.vendor_offer.listing.shipping && response.vendor_offer.listing.shipping.shipping_origin) {
-        var matchedCountry = self.countryArray.filter(function (value) {
-          return value.dataName == response.vendor_offer.listing.shipping.shipping_origin;
-        });
-        response.displayShippingOrigin = matchedCountry[0] ? matchedCountry[0].name : "";
-      }
 
       //unescape any html
       response.vendor_offer.listing.item.description = __.unescape(response.vendor_offer.listing.item.description);
@@ -211,7 +188,6 @@ module.exports = window.Backbone.Model.extend({
     //listen for fetched. This is set by the view after fetch is successful, to prevent multiple fires of changed.
     this.on('change:fetched', this.updateAttributes, this);
     this.countries = new countriesMd();
-    this.countryArray = this.countries.get('countries');
   },
 
   updateAttributes: function(callback){
@@ -228,39 +204,39 @@ module.exports = window.Backbone.Model.extend({
         vendToUserBTCRatio = 0,
         newAttributes = {};
 
-    if(this.get('vendor_offer').listing.shipping) {
+    if (this.get('vendor_offer').listing.shipping) {
       vendorDomesticShipping = this.get('vendor_offer').listing.shipping.flat_fee.fiat.price.domestic;
       vendorInternationalShipping = this.get('vendor_offer').listing.shipping.flat_fee.fiat.price.international;
     }
 
-    if(userCCode) {
+    if (userCCode) {
       getBTPrice(vendorCCode, function(btAve){
         vendorCurrencyInBitcoin = btAve;
         vendorPriceInBitCoin = Number(vendorPrice / btAve);
         vendorDomesticShippingInBitCoin = Number(vendorDomesticShipping / btAve);
         vendorInternationalShippingInBitCoin = Number(vendorInternationalShipping / btAve);
         //if vendor and user currency codes are the same, multiply by one to avoid rounding errors
-        vendToUserBTCRatio = (userCCode == vendorCCode) ? 1 : window.currentBitcoin/vendorCurrencyInBitcoin;
+        vendToUserBTCRatio = userCCode == vendorCCode ? 1 : window.currentBitcoin/vendorCurrencyInBitcoin;
         newAttributes.vendorBTCPrice = vendorPriceInBitCoin;
         newAttributes.domesticShippingBTC = vendorDomesticShippingInBitCoin;
         newAttributes.internationalShippingBTC = vendorInternationalShippingInBitCoin;
 
-        if(userCCode != 'BTC'){
-          newAttributes.price = (vendorPrice*vendToUserBTCRatio).toFixed(2);
+        if (userCCode != 'BTC'){
+          newAttributes.price = vendorPrice*vendToUserBTCRatio;
           newAttributes.displayPrice = new Intl.NumberFormat(window.lang, {
             style: 'currency',
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
             currency: userCCode
           }).format(newAttributes.price);
-          newAttributes.domesticShipping = (vendorDomesticShipping*vendToUserBTCRatio).toFixed(2);
+          newAttributes.domesticShipping = vendorDomesticShipping*vendToUserBTCRatio;
           newAttributes.displayDomesticShipping = new Intl.NumberFormat(window.lang, {
             style: 'currency',
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
             currency: userCCode
           }).format(newAttributes.domesticShipping);
-          newAttributes.internationalShipping = (vendorInternationalShipping*vendToUserBTCRatio).toFixed(2);
+          newAttributes.internationalShipping = vendorInternationalShipping*vendToUserBTCRatio;
           newAttributes.displayInternationalShipping = new Intl.NumberFormat(window.lang, {
             style: 'currency',
             minimumFractionDigits: 2,
@@ -269,18 +245,18 @@ module.exports = window.Backbone.Model.extend({
           }).format(newAttributes.internationalShipping);
         } else {
           newAttributes.price = vendorPriceInBitCoin;
-          newAttributes.displayPrice = vendorPriceInBitCoin.toFixed(4) + " BTC";
+          newAttributes.displayPrice = app.intlNumFormat(vendorPriceInBitCoin, 4) + " BTC";
           newAttributes.domesticShipping = vendorDomesticShippingInBitCoin;
-          newAttributes.displayDomesticShipping = vendorDomesticShippingInBitCoin.toFixed(4) + " BTC";
+          newAttributes.displayDomesticShipping = app.intlNumFormat(vendorDomesticShippingInBitCoin, 4) + " BTC";
           newAttributes.internationalShipping = vendorInternationalShippingInBitCoin;
-          newAttributes.displayInternationalShipping = vendorInternationalShippingInBitCoin.toFixed(4) + " BTC";
+          newAttributes.displayInternationalShipping = app.intlNumFormat(vendorInternationalShippingInBitCoin, 4) + " BTC";
         }
         //set to random so a change event is always fired
         newAttributes.priceSet = Math.random();
         self.set(newAttributes);
         typeof callback == 'function' && callback();
       });
-    }else{
+    } else {
       this.set({displayPrice: "Price Unavailable"});
     }
   }

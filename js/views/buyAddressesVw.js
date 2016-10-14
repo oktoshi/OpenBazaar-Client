@@ -1,55 +1,61 @@
-var __ = require('underscore'),
-    Backbone = require('backbone'),
-    $ = require('jquery'),
-    loadTemplate = require('../utils/loadTemplate');
-Backbone.$ = $;
+'use strict';
 
-module.exports = Backbone.View.extend({
+var __ = require('underscore'),
+    $ = require('jquery'),
+    loadTemplate = require('../utils/loadTemplate'),
+    baseVw = require('./baseVw');
+
+module.exports = baseVw.extend({
 
   events: {
-    'click .js-buyWizardAddressRadio': 'selectAddress',
+    'click .js-buyWizardAddressRadio': 'selectAddressClick',
     'click .js-buyWizardAddressSelected': 'selectAddressAndAdvance'
   },
 
   className: "flexRow",
 
   initialize: function(options) {
-    "use strict";
     this.userModel = options.userModel;
+    this.worldwide = options.worldwide;
+    this.shippingRegions = options.shippingRegions || [];
     //don't render on init, let parent trigger the render
-    //add list of countries the vendor ships to
-    this.model.set('shipsToList', (this.model.get('vendor_offer').listing.shipping.shipping_regionsDisplay).join(", "));
   },
 
   render: function(selected){
     this.model.set('user', this.userModel.toJSON());
     var self = this;
-    var modelData = this.model.toJSON();
-    modelData.selected = selected;
     loadTemplate('./js/templates/buyAddresses.html', function(loadedTemplate) {
-      self.$el.html(loadedTemplate(modelData));
+      self.$el.html(
+          loadedTemplate(
+              __.extend({}, self.model.toJSON(), {
+                worldwide: self.worldwide,
+                selected: selected
+              })
+          )
+      );
       //this does not add it to the DOM, that is done by the parent view
-      self.$('.js-buyWizardAddressRadio').eq(selected).prop('checked', true).trigger('click');
+      self.$('.js-buyWizardAddressRadio').eq(selected).prop('checked', true);
+      self.selectAddress(selected);
       //self.setAddress(selected);
     });
     return this;
   },
 
   selectAddressAndAdvance: function(){
-    "use strict";
     $(".js-buyWizardAddressNext").trigger( "click" );
   },
 
-  selectAddress: function(){
-    "use strict";
-    var index = this.$el.find('.js-buyWizardAddressRadio:checked').val();
+  selectAddressClick: function(e) {
+    this.selectAddress($(e.target).val());
+  },
+
+  selectAddress: function(index){
     this.setAddress(index);
   },
 
   setAddress: function(index){
-    "use strict";
     var selectedAddress = this.model.get('user').shipping_addresses[index];
-    if(selectedAddress){
+    if (selectedAddress){
       this.trigger("setAddress", selectedAddress);
     }
   }

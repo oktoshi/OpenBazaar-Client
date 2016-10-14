@@ -1,7 +1,8 @@
+'use strict';
+
 var __ = require('underscore'),
-    Backbone = require('backbone'),
     $ = require('jquery'),
-    messageModal = require('../utils/messageModal.js');
+    app = require('../App').getApp();
 
 
 module.exports = function(form, modelJSON, endPoint, onSucceed, onFail, addData, skipKeys, onInvalid) {
@@ -17,24 +18,27 @@ module.exports = function(form, modelJSON, endPoint, onSucceed, onFail, addData,
      addData[optional]: insert this data into the formData object, must be an object
      skipKeys[optional]: keys to skip, and not send to the server
    */
-  var self = this,
-      formData,
+  var formData,
       formKeys = [],
       tempDisabledFields = [];
 
   skipKeys = skipKeys || [];
 
-  if(form){
+  if (form){
     form.addClass('formChecked');
     if (!form[0].checkValidity()){
-      if(typeof onInvalid === 'function'){
+      if (typeof onInvalid === 'function'){
         onInvalid();
       } else {
-        messageModal.show(window.polyglot.t('errorMessages.saveError'), window.polyglot.t('errorMessages.missingError'));
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.saveError'),
+          message: window.polyglot.t('errorMessages.missingError')
+        });
       }
       return $.Deferred().reject('failed form validation').promise();
     }
 
+    /*
     //temporarily disable any blank fields so they aren't picked up by the serializeArray
     form.find(":input:not(:disabled)").each(function(){
       if($(this).val() == "") {
@@ -42,6 +46,7 @@ module.exports = function(form, modelJSON, endPoint, onSucceed, onFail, addData,
         tempDisabledFields.push($(this).attr('name'));
       }
     });
+    */
 
     //temporarily disable any form fields overriden by manual data so they aren't double submitted
     __.each(addData, function(value, key) {
@@ -61,45 +66,45 @@ module.exports = function(form, modelJSON, endPoint, onSucceed, onFail, addData,
   //add manual data not in the form
   __.each(addData, function(value, key){
     formKeys.push(key);
-    if(value.constructor === Array){
+    if (value.constructor === Array){
       __.each(value, function(val){
         formData.append(key, val);
       });
-      if(value.length == 0){
+      if (value.length == 0){
         formData.append(key, "");
       }
-    }else{
+    } else {
       formData.append(key, value);
     }
   });
 
   //if key is not in formKeys, get value from the model
-  if(modelJSON){
+  if (modelJSON){
     __.each(modelJSON, function (value, key) {
       if (formKeys.indexOf(key) == -1 && skipKeys.indexOf(key) == -1){
-        if(value && value.constructor === Array && key != "shipping_addresses" && key != "moderators"){
+        if (value && value.constructor === Array && key != "shipping_addresses" && key != "moderators"){
           __.each(value, function (val) {
             formData.append(key, val);
           });
           if (value.length == 0){
             formData.append(key, "");
           }
-        } else if(key == "shipping_addresses") {
+        } else if (key == "shipping_addresses") {
           __.each(value, function(val) {
             formData.append(key, JSON.stringify(val));
           });
           if (value.length == 0) {
             formData.append(key, "");
           }
-        } else if(key == "moderators") {
+        } else if (key == "moderators") {
           __.each(value, function(val){
             formData.append(key, val.guid);
           });
           //insert blank if there are no moderators
-          if(value.length == 0){
+          if (value.length == 0){
             formData.append(key, "");
           }
-        } else{
+        } else {
           formData.append(key, value);
         }
       }
@@ -116,14 +121,20 @@ module.exports = function(form, modelJSON, endPoint, onSucceed, onFail, addData,
     success: function(data) {
       if (data.success === true){
         typeof onSucceed === 'function' && onSucceed(data);
-      }else if (data.success === false){
-        if(onFail){
+      } else if (data.success === false){
+        if (onFail){
           onFail(data);
-        } else{
-          messageModal.show(window.polyglot.t('errorMessages.saveError'), "<i>" + data.reason + "</i>");
+        } else {
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.saveError'),
+            message: "<i>" + data.reason + "</i>"
+          });
         }
       } else {
-        messageModal.show(window.polyglot.t('errorMessages.saveError'), "<i>" + window.polyglot.t('errorMessages.serverError') + "</i>");
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.saveError'),
+          message: "<i>" + window.polyglot.t('errorMessages.serverError') + "</i>"
+        });
       }
     },
     error: function(jqXHR, status, errorThrown){

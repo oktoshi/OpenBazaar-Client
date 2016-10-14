@@ -1,14 +1,15 @@
 'use strict';
 
-var Backbone = require('backbone'),
+var __ = require('underscore'),
     loadTemplate = require('../utils/loadTemplate'),
-    cropit = require('../utils/jquery.cropit'),
-    app = require('../App').getApp(),    
+    cropit = require('cropit'),
+    app = require('../App').getApp(),
     baseModal = require('./baseModal'),
     languagesModel = require('../models/languagesMd'),
     countryListView = require('../views/countryListVw'),
     currencyListView = require('../views/currencyListVw'),
     languageListView = require('../views/languageListVw'),
+    LoadingModal = require('./loadingModal'),
     guidStillCreatingModal = require('../views/guidStillCreatingModal');
 
 module.exports = baseModal.extend({
@@ -19,7 +20,6 @@ module.exports = baseModal.extend({
     'click .js-homeModal-countrySelect': 'countrySelect',
     'click .js-homeModal-currencySelect': 'currencySelect',
     'click .js-homeModal-languageSelect': 'languageSelect',
-    'click .js-homeModal-timeSelect': 'timeSelect',
     'click .js-accordionNext': 'accNext',
     'click .js-accordionPrev': 'accPrev',
     'keypress .js-accordionNext': 'accNextKeypress',
@@ -40,15 +40,19 @@ module.exports = baseModal.extend({
     this.options = options || {};
     this.$document = $(document).on('focus', this.docFocusHandler);
     this.$el.attr('tabIndex', 0);
-    this.$loadingModal = $('.js-loadingModal');
     this.languages = new languagesModel();
+
+    this.loadingModal = new LoadingModal({
+      showLoadIndexButton: false
+    }).render().open();
+    setTimeout(() => this.registerChild(this.loadingModal));
 
     // pre-select lauguage.
     var localLanguage = window.navigator.language;
     var localLanguageFound = false;
     var languageList = this.languages.get('languages');
-    for(var i in languageList) {
-      if(languageList[i].langCode == localLanguage) {
+    for (var i in languageList) {
+      if (languageList[i].langCode == localLanguage) {
         localLanguageFound = true;
         break;
       }
@@ -61,34 +65,22 @@ module.exports = baseModal.extend({
     });
   },
 
-  loadingOff: function() {
-    this.$loadingModal.addClass('hide')
-      .css('z-index', '');
-    this.$el.removeClass('hide');
-  },
-
-  loadingOn: function() {
-    this.$loadingModal.removeClass('hide')
-      .css('z-index', 99999);
-    this.$el.addClass('hide');
-  },  
-
   open: function() {
     if (!this._accordianReady) {
-      this.loadingOn();
+      this.loadingModal.open();
     }
 
     baseModal.prototype.open.apply(this, arguments);
   },
 
   close: function() {
-    this.loadingOff();
+    this.loadingModal.close();
     baseModal.prototype.close.apply(this, arguments);
   },
 
   blockClicks: function(e) {
     e.stopPropagation();
-  },  
+  },
 
   docFocusHandler: function(e) {
     if (this.isOpen() && !$.contains( this.el, e.target )) {
@@ -116,35 +108,24 @@ module.exports = baseModal.extend({
   languageSelect: function(e){
     var lang = $(e.currentTarget).attr('data-code');
     this.model.set('language', lang);
-  },  
-
-  timeSelect: function(e){
-    var inpt = $(e.target).closest('input[type=radio]');
-    var tz = inpt.val();
-    this.$('.js-homeModal-timezoneList').find('input[type=radio]').prop("checked", false);
-    inpt.prop("checked", true);
-    this.model.set('time_zone', tz);
   },
 
-  accordionReady: function(listReady) {
-    var countryList,
-        currencyList,
-        timeList,
-        languageList,
+  accordionReady: function() {
+    /* eslint-disable */
+    var countryList = new window.List('homeModal-countryList', {valueNames: ['homeModal-country'], page: 1000}),
+        currencyList = new window.List('homeModal-currencyList', {valueNames: ['homeModal-currency'], page: 1000}),
+        timeList = new window.List('homeModal-timeList', {valueNames: ['homeModal-time'], page: 1000}),
+        languageList = new window.List('homeModal-languageList', {valueNames: ['homeModal-language'], page: 1000}),
+        /* eslint-enable */
         self = this;
 
     this._accordianReady = true;
-    this.loadingOff();
+    this.loadingModal.close();
 
-    countryList = new window.List('homeModal-countryList', {valueNames: ['homeModal-country'], page: 1000});
-    currencyList = new window.List('homeModal-currencyList', {valueNames: ['homeModal-currency'], page: 1000});
-    timeList = new window.List('homeModal-timeList', {valueNames: ['homeModal-time'], page: 1000});
-    languageList = new window.List('homeModal-languageList', {valueNames: ['homeModal-language'], page: 1000});
-    
     this.initAccordion('.js-profileAccordion');
-    
+
     // Scroll selected options to the top
-    var checkedInput = this.$('.js-homeModal-listParent').find('input:checked').each(function(){
+    this.$('.js-homeModal-listParent').find('input:checked').each(function(){
       var checkedInputScrollParent = $(this).closest('ul');
       var checkedInputPosition = $(this).closest('li').position().top;
       var checkedInputOffset = checkedInputScrollParent.position().top;
@@ -164,14 +145,16 @@ module.exports = baseModal.extend({
       onImageLoaded: function(){
         self.$el.find('.js-avatarLoading').addClass('fadeOut');
       },
-      onFileReaderError: function(data){console.log(data);},
+      onFileReaderError: function(data){
+        console.log(data);
+      },
       onImageError: function(errorObject, errorCode, errorMessage) {
         console.log(errorObject);
         console.log(errorCode);
         console.log(errorMessage);
       }
-    });    
-  },  
+    });
+  },
 
   initAccordion: function(targ){
     setTimeout(() => { //move to after painting so values are not zero
@@ -188,14 +171,13 @@ module.exports = baseModal.extend({
       });
       this.accChildren.css({'width': this.accWidth, 'height': this.accHeight});
     }, 0);
-  },  
+  },
 
   accNext: function(advanceBy){
-    var self = this,
-        oldPos = parseInt(this.accWin.css('left').replace("px","")),
+    var oldPos = parseInt(this.accWin.css('left').replace("px", "")),
         moveBy = parseInt(advanceBy) ? this.accWidth * advanceBy : this.accWidth;
 
-    if(oldPos > (this.accWidth * (this.accNum -1) * -1)){
+    if (oldPos > (this.accWidth * (this.accNum -1) * -1)){
       this.accWin.css('left', function(){
         return oldPos - moveBy;
       });
@@ -210,11 +192,10 @@ module.exports = baseModal.extend({
   },
 
   accPrev: function(rewindBy){
-    var self = this,
-        oldPos = parseInt(this.accWin.css('left').replace("px","")),
+    var oldPos = parseInt(this.accWin.css('left').replace("px", "")),
         moveBy = parseInt(rewindBy) ? this.accWidth * rewindBy : this.accWidth;
 
-    if(oldPos < (0)){
+    if (oldPos < (0)){
       this.accWin.css('left', function(){
         return oldPos + moveBy;
       });
@@ -230,10 +211,10 @@ module.exports = baseModal.extend({
 
   triggerOnEnterSpace: function(e, cb) {
     switch (e.which) {
-      case 32: // space
-      case 13: // return
-        event.stopPropagation();
-        return cb(e);
+    case 32: // space
+    case 13: // return
+      event.stopPropagation();
+      return cb(e);
     }
     return true;
   },
@@ -254,10 +235,14 @@ module.exports = baseModal.extend({
 
     if (guidCreation.state() == 'pending') {
       this.guidStillCreatingModal && guidStillCreatingModal.remove();
-      this.guidStillCreatingModal = new guidStillCreatingModal();
+      this.guidStillCreatingModal = new guidStillCreatingModal({
+        dismissOnOverlayClick: false,
+        dismissOnEscPress: false,
+        showCloseButton: false
+      });
       this.guidStillCreatingModal.render().open();
     } else {
-      this.loadingOn();
+      this.loadingModal.open();
     }
 
     guidCreation.done(function() {
@@ -267,34 +252,36 @@ module.exports = baseModal.extend({
     });
   },
 
-  _settingsDone: function(e){
+  _settingsDone: function(){
     var self = this,
         server = this.model.get('serverUrl'),
         profileFormData = new FormData(),
         settingsFormData = new FormData(),
         bannerUpload = $.Deferred(),
         avatarUpload = $.Deferred(),
-        followHandles = [];
+        followHandles = [],
+        header;
 
 
-    if(this.$('textarea#aboutInput').val() != ""){
-        self.model.set('short_description', this.$('textarea#aboutInput').val());
+    if (this.$('textarea#aboutInput').val() != ""){
+      self.model.set('short_description', this.$('textarea#aboutInput').val());
     }
 
-    if(this.$('#storeNameInput').val() != ""){
-        self.model.set('name', this.$('#storeNameInput').val());
-    }else if (self.model.get('name') == undefined){
+    if (this.$('#storeNameInput').val() != ""){
+      self.model.set('name', this.$('#storeNameInput').val());
+    } else if (typeof self.model.get('name') === 'undefined'){
         //otherwise error since the profile api needs the name parameter and as of now it is not set in the userMd.js
-        self.model.set('name', "ob" + Math.random().toString(36).slice(2));
+      self.model.set('name', "ob" + Math.random().toString(36).slice(2));
     }
 
     var themeId = this.$('input[name=theme-selection]:checked');
-    if(themeId.length > 0){
-      var header = themeId.data('header');
-      var primaryColor = parseInt(themeId.data('primary-color').slice(1), 16);
-      var secondaryColor = parseInt(themeId.data('secondary-color').slice(1), 16);
-      var backgroundColor = parseInt(themeId.data('background-color').slice(1), 16);
-      var textColor = parseInt(themeId.data('text-color').slice(1), 16);
+    if (themeId.length > 0){
+      var primaryColor = parseInt(themeId.data('primary-color').slice(1), 16),
+          secondaryColor = parseInt(themeId.data('secondary-color').slice(1), 16),
+          backgroundColor = parseInt(themeId.data('background-color').slice(1), 16),
+          textColor = parseInt(themeId.data('text-color').slice(1), 16);
+
+      header = themeId.data('header');
 
       self.model.set('primary_color', primaryColor);
       self.model.set('secondary_color', secondaryColor);
@@ -304,18 +291,18 @@ module.exports = baseModal.extend({
 
     var nsfwVal = this.$("input[name='nsfw']:checked").val();
     this.model.set('nsfw', nsfwVal);
-    localStorage.setItem('NSFWFilter',  nsfwVal); //the server ignores the nsfw value currently
+    localStorage.setItem('NSFWFilter', nsfwVal); //the server ignores the nsfw value currently
 
     $.each(this.model.attributes,
-        function(i,el) {
-            if(i == "country") {
-                profileFormData.append("location",el);
-            }
-            if(i == "name" || i =="short_description"|| (themeId && (i == "primary_color" || i == "secondary_color" || i == "text_color"|| i =="background_color" ))) {
-                profileFormData.append(i,""+el);
-            } else {
-                settingsFormData.append(i,el);
-            }
+        function(i, el) {
+          if (i == "country") {
+            profileFormData.append("location", el);
+          }
+          if (i == "name" || i =="short_description"|| (themeId && (i == "primary_color" || i == "secondary_color" || i == "text_color"|| i =="background_color" ))) {
+            profileFormData.append(i, ""+el);
+          } else {
+            settingsFormData.append(i, el);
+          }
         }
     );
 
@@ -328,7 +315,7 @@ module.exports = baseModal.extend({
         data: settingsFormData,
         dataType: "json",
         success: function(data) {
-          if(data.success) {
+          if (data.success) {
             $.ajax({
               type: "POST",
               url: server + "profile",
@@ -339,11 +326,11 @@ module.exports = baseModal.extend({
               success: function(data) {
                 var profile = self.options.userProfile;
 
-                if(data.success == true) {
+                if (data.success == true) {
                   profile.fetch()
                     .done(function() {
                       self.trigger('onboarding-complete', profile.get('profile').guid);
-                    });                  
+                    });
                 }
               },
               error: function(jqXHR, status, errorThrown){
@@ -361,7 +348,7 @@ module.exports = baseModal.extend({
         }
       });
     };
-   
+
     var imageURI = this.$('#image-cropper').cropit('export', {
       type: 'image/jpeg',
       quality: 0.75,
@@ -375,9 +362,9 @@ module.exports = baseModal.extend({
     } else {
       bannerUpload.resolve();
     }
-    
+
     if (imageURI) {
-      imageURI = imageURI.replace(/^data:image\/(png|jpeg);base64,/, '');
+      imageURI = imageURI.replace(/^data:image\/(png|jpeg|webp);base64,/, '');
 
       this.avatarUpload(imageURI).done((imgHash) => {
         profileFormData.append('avatar', imgHash);
@@ -386,7 +373,7 @@ module.exports = baseModal.extend({
       avatarUpload.resolve();
     }
 
-    this.$('.js-followHandles [data-handle]:checked').each(function(e) {
+    this.$('.js-followHandles').find('[data-handle]:checked').each(function() {
       followHandles.push($(this).data('handle'));
     });
 
@@ -396,7 +383,7 @@ module.exports = baseModal.extend({
     ).always(() => {
       submit().always(() => {
         if (followHandles.length) {
-          this.postFollowing(followHandles);
+          setTimeout( ()=> this.postFollowing(followHandles), 3000); //following fails if it happens too soon after the guid is generated
         }
       });
     });
@@ -420,7 +407,7 @@ module.exports = baseModal.extend({
       throw new Error('Please provide a followers array with at least on handle to follow.');
     }
 
-    followers.forEach((follower, index) => {
+    followers.forEach((follower) => {
       app.getGuid(follower).done((guid) => {
         $.ajax({
           url: this.model.get('serverUrl') + 'follow',
@@ -428,7 +415,7 @@ module.exports = baseModal.extend({
           dataType: 'JSON',
           data: {
             guid: guid
-          }          
+          }
         }).fail(() => {
           failed ++;
 
@@ -436,9 +423,6 @@ module.exports = baseModal.extend({
             failed ? deferred.reject() : deferred.resolve();
           }
 
-          console.log(jqXHR);
-          console.log(status);
-          console.log(errorThrown);
         }).done(function(data) {
           if (data.success) {
             succeeded++;
@@ -449,9 +433,9 @@ module.exports = baseModal.extend({
 
           if (failed + succeeded === followers.length) {
             failed ? deferred.reject() : deferred.resolve();
-          }          
+          }
         });
-      }).fail((jqXHR, status, errorThrown) => {
+      }).fail(() => {
         failed++;
 
         if (failed + succeeded === followers.length) {
@@ -485,8 +469,8 @@ module.exports = baseModal.extend({
       success: function(data) {
         var img_hash = data.image_hashes[0];
 
-        if(data.success === true && img_hash !== 'b472a266d0bd89c13706a4132ccfb16f7c3b9fcb' && img_hash.length == 40) {
-          deferred.resolve(img_hash)
+        if (data.success === true && img_hash !== 'b472a266d0bd89c13706a4132ccfb16f7c3b9fcb' && img_hash.length == 40) {
+          deferred.resolve(img_hash);
         } else {
           deferred.reject();
         }
@@ -508,20 +492,20 @@ module.exports = baseModal.extend({
 
     if (!bannerPath) {
       throw new Error('Please provide the bannerPath.');
-    }        
+    }
 
-    xhr.open('GET', bannerPath, true); 
+    xhr.open('GET', bannerPath, true);
     xhr.responseType = 'blob';
-    
-    xhr.onload = function (e) {
+
+    xhr.onload = function () {
       var reader = new FileReader(),
           file = this.response;
-      
+
       reader.onload = function(event) {
         var res = event.target.result,
             bannerFormData = new FormData();
 
-        bannerFormData.append('image', res.replace(/^data:image\/(png|jpeg);base64,/, ''));
+        bannerFormData.append('image', res.replace(/^data:image\/(png|jpeg|webp);base64,/, ''));
 
         $.ajax({
           type: 'POST',
@@ -533,7 +517,7 @@ module.exports = baseModal.extend({
           success: function(data) {
             var img_hash = data.image_hashes[0];
 
-            if(data.success === true && img_hash !== "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb" && img_hash.length == 40) {
+            if (data.success === true && img_hash !== "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb" && img_hash.length == 40) {
               deferred.resolve(img_hash);
             } else {
               deferred.reject();
@@ -547,8 +531,8 @@ module.exports = baseModal.extend({
           }
         });
       };
-      
-      reader.readAsDataURL(file)
+
+      reader.readAsDataURL(file);
     };
 
     xhr.onerror = function (e) {
@@ -563,25 +547,17 @@ module.exports = baseModal.extend({
 
   settingsDoneKeypress: function(e) {
     this.triggerOnEnterSpace(e, this.settingsDone.bind(this));
-  },      
+  },
 
   render: function() {
     var self = this;
 
     loadTemplate('./js/templates/onboardingModal.html', function(t) {
-      var timeZoneOffset,
-          $themeInputs;
+      var $themeInputs;
 
       self.$el.html(t());
 
       baseModal.prototype.render.apply(self, arguments);
-
-      // pre-select timezone
-      var timeZoneOffset = new Date().getTimezoneOffset();
-      timeZoneOffset = '(GMT ' + (timeZoneOffset < 0 ? '+' : '-') + parseInt(Math.abs(timeZoneOffset/60)) + ':00)';
-      var selectedTimeZone = self.$("[id*='" + timeZoneOffset + "']");
-      selectedTimeZone.prop('checked', true);
-      self.model.set('time_zone', selectedTimeZone.val());
 
       // select a random theme
       $themeInputs = self.$('[name=theme-selection]');
@@ -617,7 +593,7 @@ module.exports = baseModal.extend({
   },
 
   remove: function() {
-    this.loadingOff();
+    this.loadingModal.close();
     this.$document.off('focus', this.docFocusHandler);
     this.guidStillCreatingModal && this.guidStillCreatingModal.remove();
     baseModal.prototype.remove.apply(this, arguments);

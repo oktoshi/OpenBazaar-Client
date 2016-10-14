@@ -1,9 +1,7 @@
 'use strict';
 
 var __ = require('underscore'),
-    Backbone = require('backbone'),
     loadTemplate = require('../utils/loadTemplate'),
-    app = require('../App.js').getApp(),        
     baseModal = require('./baseModal');
 
 module.exports = baseModal.extend({
@@ -15,6 +13,16 @@ module.exports = baseModal.extend({
     'click .js-retry': 'onRetryClick'
   },
 
+  constructor: function(options) {
+    options = __.extend({
+      dismissOnOverlayClick: false,
+      dismissOnEscPress: false,
+      showCloseButton: false
+    }, options || {});
+
+    baseModal.prototype.constructor.apply(this, [options].concat(Array.prototype.slice.call(arguments, 1)));
+  },  
+
   initialize: function(options) {
     var defaultState = {
       mode: 'connecting'
@@ -23,12 +31,10 @@ module.exports = baseModal.extend({
     this.options = options || {};
     this._state = {};
     this.setState(__.extend({}, defaultState, this.options.initialState || {}));
-    $('#loadingModal').addClass('hide'); //hide modal if it is still visible
   },
 
   setState: function(state) {
-    var modes = ['connecting', 'failed-connect'],
-        newState;
+    var newState;
 
     if (!state) return;
 

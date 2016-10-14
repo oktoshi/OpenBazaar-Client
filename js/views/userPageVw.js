@@ -7,21 +7,24 @@ var __ = require('underscore'),
     app = require('../App.js').getApp(),
     loadTemplate = require('../utils/loadTemplate'),
     colpicker = require('../utils/colpick.js'),
-    cropit = require('../utils/jquery.cropit'),
+    cropit = require('cropit'),
+    ratingCl = require('../collections/ratingCl'),
     userProfileModel = require('../models/userProfileMd'),
     listingsModel = require('../models/listingsMd'),
     usersModel = require('../models/usersMd'),
     itemModel = require('../models/itemMd'),
-    baseVw = require('./baseVw'),
+    pageVw = require('./pageVw'),
     itemListView = require('./itemListVw'),
     personListView = require('./userListVw'),
+    reviewsView = require('./reviewsVw'),
     itemVw = require('./itemVw'),
     itemEditVw = require('./itemEditVw'),
-    messageModal = require('../utils/messageModal.js'),
     setTheme = require('../utils/setTheme.js'),
-    sanitizeHTML = require('sanitize-html'),
     storeWizardVw = require('./storeWizardVw'),
-    moderatorSettingsVw = require('./moderatorSettingsVw');
+    saveToAPI = require('../utils/saveToAPI'),
+    ModeratorSettingsModal = require('./moderatorSettingsModal'),
+    HiddenWarningModal = require('./hiddenWarningModal'),
+    UserPageVw;
 
 var defaultItem = {
   "vendor_offer": {
@@ -100,27 +103,28 @@ var defaultItem = {
   }
 };
 
-var recommendedPrimaryColors = ['#4c877c','#dc6c7d','#ce738b','#3a4352','#80bbad','#106c88','#58a6ad','#90545d','#b53b4d','#6c9052','#89a4b3','#ffffff','#827341','#74b69e','#716e86','#935456','#929e8e','#9aa1a5','#d9d8c6'];
+var recommendedPrimaryColors = ['#4c877c', '#dc6c7d', '#ce738b', '#3a4352', '#80bbad', '#106c88', '#58a6ad', '#90545d', '#b53b4d', '#6c9052', '#89a4b3', '#ffffff', '#827341', '#74b69e', '#716e86', '#935456', '#929e8e', '#9aa1a5', '#d9d8c6'];
 
 function shadeColor2(color, percent) {
-  var f=parseInt(color.slice(1),16),t=percent<0?0:255,p=percent<0?percent*-1:percent,R=f>>16,G=f>>8&0x00FF,B=f&0x0000FF;
+  var f=parseInt(color.slice(1), 16), t=percent<0?0:255, p=percent<0?percent*-1:percent, R=f>>16, G=f>>8&0x00FF, B=f&0x0000FF;
   return "#"+(0x1000000+(Math.round((t-R)*p)+R)*0x10000+(Math.round((t-G)*p)+G)*0x100+(Math.round((t-B)*p)+B)).toString(16).slice(1);
 }
 
 function rgb2hex(rgb) {
-    rgb = rgb.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
-    function hex(x) {
-        return ("0" + parseInt(x).toString(16)).slice(-2);
-    }
-    return hex(rgb[1]) + hex(rgb[2]) + hex(rgb[3]);
+  rgb = rgb.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/);
+  function hex(x) {
+    return ("0" + parseInt(x).toString(16)).slice(-2);
+  }
+  return hex(rgb[1]) + hex(rgb[2]) + hex(rgb[3]);
 }
 
-module.exports = baseVw.extend({
+UserPageVw = pageVw.extend({
 
-  classname: "userView",
+  className: "userView contentWrapper",
 
   events: {
     'click .js-aboutTab': 'aboutClick',
+    'click .js-reviewsTab': 'reviewsClick',
     'click .js-followersTab': 'followersClick',
     'click .js-followingTab': 'followingClick',
     'click .js-storeTab': 'storeTabClick',
@@ -132,19 +136,18 @@ module.exports = baseVw.extend({
     'click .js-cloneItem': 'cloneItem',
     'click .js-deleteItem': 'deleteItemClick',
     'click .js-cancelItem': 'cancelClick',
-    'click .js-saveItem': 'saveItem',
-    'click .js-saveCustomization': 'saveCustomizePage',
+    'click .js-saveItem': 'saveItemClick',
+    'click .js-saveCustomization': 'saveCustomizePageClick',
     'click .js-cancelCustomization': 'cancelCustomizePage',
     'click .js-createStore': 'createStore',
     'click .js-follow': 'followUserClick',
     'click .js-unfollow': 'unfollowUserClick',
+    'click .js-addmoderator': 'addModeratorClick',
+    'click .js-removemoderator': 'removeModeratorClick',
     'click .js-moreButtonsOwnPage': 'moreButtonsOwnPageClick',
     'click .js-moreButtonsNotOwnPage': 'moreButtonsNotOwnPageClick',
     'click .js-message': 'sendMessage',
     'click .js-moderatorSettings': 'showModeratorModal',
-    'click .js-customizeSecondaryColor': 'displayCustomizeSecondaryColor',
-    'click .js-customizePrimaryColor': 'displayCustomizePrimaryColor',
-    'click .js-customizeBackgroundColor': 'displayCustomizeBackgroundColor',
     'click .js-customColorChoicePicker': 'customizeColorClick',
     'mouseenter .js-customColorChoice': 'clickCustomColorChoice',
     'click .js-customizePrimaryColor .js-customizeColor': 'displayCustomizePrimaryColor',
@@ -157,14 +160,11 @@ module.exports = baseVw.extend({
     'click .js-customizeTextColor .js-customColorChoice': 'customizeSelectColor',
     'click .js-block': 'blockUserClick',
     'click .js-unblock': 'unblockUserClick',
-    'click .js-showBlockedUser': 'showBlockedUser',
     'change .js-categories': 'categoryChanged',
-    'click .js-showNSFWContent': 'clickShowNSFWContent'
+    'click .backToTop': 'clickBackToTop'
   },
 
   initialize: function (options) {
-    "use strict";
-
     var self = this;
     this.options = options || {};
 
@@ -180,9 +180,12 @@ module.exports = baseVw.extend({
     //set view's userID from the userModel;
     this.userID = options.userModel.get('guid');
     this.userProfileFetchParameters = {};
+    this.followerFetchStart = 0;
+    this.followersFetchPer = 30;
+    this.followerFetchTotal = 0;
     this.itemFetchParameters = {};
     this.model = new Backbone.Model();
-    this.globalUserProfile = options.userProfile;
+    //this.globalUserProfile = options.userProfile;
     this.userProfile = new userProfileModel();
     //models have to be passed the dynamic URL
     this.userProfile.urlRoot = options.userModel.get('serverUrl') + "profile";
@@ -192,6 +195,7 @@ module.exports = baseVw.extend({
     this.followers.urlRoot = options.userModel.get('serverUrl') + "get_followers";
     this.following = new usersModel();
     this.following.urlRoot = options.userModel.get('serverUrl') + "get_following";
+    this.reviews = new ratingCl();
     //store a list of the viewing user's followees. They will be different from the page followers if this is not their own page.
     this.ownFollowing = [];
     this.socketView = options.socketView;
@@ -201,10 +205,13 @@ module.exports = baseVw.extend({
     this.lastTab = "about"; //track the last tab clicked
     //flag to hold state when customizing
     this.customizing = false;
+    this.editing = false;
     this.skipNSFWmodal = options.skipNSFWmodal;
     this.showNSFW = options.skipNSFWmodal ? options.skipNSFWmodal : JSON.parse(localStorage.getItem('NSFWFilter'));
     this.showNSFWContent = this.showNSFW;
     this.currentItemHash = options.itemHash;
+    this.$obContainer = $('#obContainer');
+    /*
     //hold changes to the page for undoing, such as custom colors
     this.undoCustomAttributes = {
       profile: {
@@ -214,6 +221,7 @@ module.exports = baseVw.extend({
         background_color: ""
       }
     };
+    */
 
     this.loadingDeferred = $.Deferred();
 
@@ -236,7 +244,7 @@ module.exports = baseVw.extend({
       this.setItem(options.contract_hash, null, function(){
         self.cloneItem();
       });
-    });    
+    });
 
     this.listenTo(window.obEventBus, "itemShortDelete", function(options){
       self.deleteItem(false, options.contract_hash);
@@ -250,21 +258,30 @@ module.exports = baseVw.extend({
       if (e.guid === this.model.get('page').profile.guid) {
         this.renderUserBlocked();
       }
-    });    
+    });
 
     this.listenTo(window.obEventBus, 'unblockingUser', (e) => {
       if (e.guid === this.model.get('page').profile.guid) {
         this.renderUserUnblocked();
       }
-    });        
+    });
+
+    this.listenTo(window.obEventBus, 'saveCurrentForm', function(){
+      if (self.editing) {
+        self.saveItem();
+      } else if (self.customizing) {
+        self.saveCustomizePage();
+      }
+    });
 
     //determine if this is the user's own page or another profile's page
     //if no userID is passed in, or it matches the user's ID, then this is their page
     //sometimes it can be set to the string 'null', check for that too
-    if(!this.pageID || this.pageID == this.userID || this.pageID == 'null'){
+    if (!this.pageID || this.pageID == this.userID || this.pageID == 'null'){
       //set page ID to be the user's own ID
       this.pageID = this.userID;
       this.options.ownPage = true;
+      this.showNSFWContent = true;
     } else {
       this.options.ownPage = false;
       this.userProfileFetchParameters = $.param({'guid': this.pageID});
@@ -282,7 +299,7 @@ module.exports = baseVw.extend({
           if (self.options.ownPage === true){
             model.set('headerURL', self.options.userModel.get('serverUrl') + "get_image?hash=" + model.get('profile').header_hash);
             model.set('avatarURL', self.options.userModel.get('serverUrl') + "get_image?hash=" + model.get('profile').avatar_hash);
-          }else{
+          } else {
             model.set('headerURL', self.options.userModel.get('serverUrl') + "get_image?hash=" + model.get('profile').header_hash + "&guid=" + self.pageID);
             model.set('avatarURL', self.options.userModel.get('serverUrl') + "get_image?hash=" + model.get('profile').avatar_hash + "&guid=" + self.pageID);
           }
@@ -294,23 +311,36 @@ module.exports = baseVw.extend({
           self.model.set({ownPage: self.options.ownPage});
           self.render();
           !self.currentItemHash && self.loadingDeferred.resolve();
-        }else{
+
+          // Handle was requested
+          if (profile.handle) {
+            window.obEventBus.trigger('handleObtained', profile);
+            app.appBar.setTitle(profile.handle);
+          }
+        } else {
           //model was returned as a blank object
           self.loadingDeferred.reject();
         }
       },
-      error: function(model, response){
+      error: function(){
         if (self.isRemoved()) return;
 
         self.loadingDeferred.reject();
       },
       complete: function(xhr, textStatus) {
-        if(textStatus == 'parsererror'){
-          messageModal.show(window.polyglot.t('errorMessages.serverError'), window.polyglot.t('errorMessages.badJSON'));
+        if (textStatus == 'parsererror'){
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.serverError'),
+            message: window.polyglot.t('errorMessages.badJSON')
+          });
+
+          throw new Error("The user profile data returned from the API has a parsing error.");
         }
       }
     });
   },
+
+  cacheExpires: 0,
 
   loadingConfig: function() {
     var config = {
@@ -320,7 +350,7 @@ module.exports = baseVw.extend({
         this.itemFetch && this.itemFetch.abort();
       }
     };
-    
+
     if (this.currentItemHash) {
       config.connectText = window.polyglot.t('pageConnectingMessages.listingConnect').replace('${listing}', this.currentItemHash);
       config.failedText = window.polyglot.t('pageConnectingMessages.listingFail');
@@ -330,97 +360,118 @@ module.exports = baseVw.extend({
     } else {
       config.connectText = window.polyglot.t('pageConnectingMessages.userConnect').replace('${guid}', this.pageID);
       config.failedText = window.polyglot.t('pageConnectingMessages.userFail');
-      // config.connectTooltip = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed posuere, lectus quis euismod vestibulum, sapien justo laoreet ante, sit amet mollis nibh diam cursus massa. Duis a eros dapibus, ultrices tortor nec, sodales magna.';
-      // config.failedTooltip = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed posuere, lectus quis euismod vestibulum, sapien justo laoreet ante, sit amet mollis nibh diam cursus massa. Duis a eros dapibus, ultrices tortor nec, sodales magna.';
     }
 
     return config;
   },
 
   render: function(){
-    "use strict";
     var self = this,
         blocked = this.options.userModel.get('blocked_guids') || [],
         isBlocked = blocked.indexOf(this.pageID) !== -1;
 
-    //add blocked status to model
-    this.model.set('isBlocked', isBlocked);
-    //make sure container is cleared
-    $('#content').html(this.$el);
+    this.model.set('isBlocked', isBlocked); //add blocked status to model
 
-    loadTemplate('./js/templates/userPage.html', function(loadedTemplate) {
-      self.setCustomStyles();
-      self.$el.html(loadedTemplate(self.model.toJSON()));
-      self.fetchFollowing();
-      self.fetchListings();
-      //save state of the page
-      self.undoCustomAttributes.background_color = self.model.get('page').profile.background_color;
-      self.undoCustomAttributes.primary_color = self.model.get('page').profile.primary_color;
-      self.undoCustomAttributes.secondary_color = self.model.get('page').profile.secondary_color;
-      self.undoCustomAttributes.text_color = self.model.get('page').profile.text_color;
-      self.setCustomStyles();
-      self.setState(self.state, self.currentItemHash, { replaceHistory: true });
+    loadTemplate('./js/templates/backToTop.html', function(backToTopTmpl) {
+      loadTemplate('./js/templates/userPage.html', function(loadedTemplate) {
+        self.setCustomStyles();
+        self.$el.html(loadedTemplate(
+          __.extend(self.model.toJSON(), {
+            backToTopTmpl: backToTopTmpl
+          })
+        ));
+        self.fetchReviews();
+        self.fetchFollowing();
+        self.getIsModerator();
+        self.fetchListings();
+        self.setCustomStyles();
+        self.setState(self.state, self.currentItemHash, { replaceHistory: true });
+        self.$backToTop = self.$('.backToTop');
 
-      //check if user is blocked
-      if(!self.options.ownPage && isBlocked) {
-        self.hideThisUser("blocked");
-      }
+        //check if user is blocked
+        if (!self.options.ownPage && isBlocked) {
+          self.needsBlockedWarning = true;
+        }
 
-      if(!self.options.ownPage && !self.skipNSFWmodal && self.model.get('page').profile.nsfw && !self.showNSFW){
-          self.hideThisUser("nsfw");
-      }
+        if (!self.options.ownPage && !self.skipNSFWmodal && self.model.get('page').profile.nsfw && !self.showNSFW){
+          self.needsNSFWWarning = true;
+        }
 
-      self.$el.find('#image-cropper').cropit({
-        smallImage: "stretch",
-        maxZoom: 5,
-        onFileReaderError: function(data){console.log(data);},
-        onFileChange: function(){
-          $('.js-headerLoading').removeClass('fadeOut');
-          if(self.$el.find('#image-cropper').cropit('isZoomable')){
-            $('.js-bannerRangeInput').removeClass('hide');
+        if (self.needsBlockedWarning) {
+          self.hideThisUser('blocked');
+        } else if (self.needsNSFWWarning) {
+          self.hideThisUser('nsfw');
+        }
+
+        self.headerCropper = self.$('#image-cropper');
+
+        self.headerCropper.cropit({
+          smallImage: "stretch",
+          maxZoom: 5,
+          $preview: self.$('.headerCropperPreview'),
+          onFileReaderError: function(data){
+            console.log(data);
+          },
+          onFileChange: function(){
+            if (self.headerCropper.cropit('isZoomable')){
+              $('.js-bannerRangeInput').removeClass('hide');
+            }
+          },
+          onImageError: function(errorObject, errorCode, errorMessage){
+            console.log(errorObject);
+            console.log(errorCode);
+            console.log(errorMessage);
           }
-        },
-        onImageLoaded: function(){$('.js-headerLoading').addClass('fadeOut');},
-        onImageError: function(errorObject, errorCode, errorMessage){
-          console.log(errorObject);
-          console.log(errorCode);
-          console.log(errorMessage);
-        }
-      });
+        });
 
-      $("#obContainer").scroll(function(){
-        if ($(this).scrollTop() > 400 && self.slimVisible === false ) {
-          self.slimVisible = true;
-          $('.user-page-header-slim').addClass('textOpacity1').addClass('top70');
-          $('.user-page-header').removeClass('shadow-inner1').addClass('zIndex4');
-          $('.user-page-header .rowItem').hide();
-          $('.user-page-navigation-buttons').addClass('positionFixed positionTop68');
-        }
-        if ($(this).scrollTop() < 400 && self.slimVisible === true ) {
-          self.slimVisible = false;
-          $('.user-page-header-slim').removeClass('top70');
-          $('.user-page-header').addClass('shadow-inner1').removeClass('zIndex4');
-          $('.user-page-header .rowItem').show();
-          $('.user-page-navigation-buttons').removeClass('positionFixed positionTop68');
-        }
-      });
+        self.scrollHandler = __.bind(
+          __.throttle(self.onScroll, 100),
+          self
+        );
 
-      var about = sanitizeHTML(self.model.get('page').profile.displayAbout, {
-        allowedTags: [ 'h2','h3', 'h4', 'h5', 'h6', 'p', 'a','u','ul', 'ol', 'nl', 'li', 'b', 'i', 'strong', 'em', 'strike', 'hr', 'br', 'img', 'blockquote' ]
+        self.$obContainer.off('scroll', self.scrollHandler);
+        self.$obContainer.on('scroll', self.scrollHandler);
       });
-
-      $('.js-userAbout').html(about);
     });
 
     return this;
   },
 
+  onScroll: function() {
+    if (this.$obContainer.scrollTop() > 400 && this.slimVisible === false ) {
+      this.slimVisible = true;
+      this.$('.user-page-header-slim').addClass('scrolledIntoView');
+      this.$('.user-page-header').removeClass('shadow-inner1')
+        .addClass('zIndex4')
+        .find('.rowItem')
+        .hide();
+      this.$('.user-page-navigation-buttons').addClass('positionFixed positionTop68');
+      this.$backToTop.addClass('slideUp');
+    } else if (this.$obContainer.scrollTop() < 400 && this.slimVisible === true ) {
+      this.slimVisible = false;
+      this.$('.user-page-header-slim').removeClass('scrolledIntoView');
+      this.$('.user-page-header').addClass('shadow-inner1')
+        .removeClass('zIndex4')
+        .find('.rowItem')
+        .show();
+      this.$('.user-page-navigation-buttons').removeClass('positionFixed positionTop68');
+      this.$backToTop.removeClass('slideUp');
+    }
+  },
+
+  clickBackToTop: function() {
+    this.$obContainer.animate({ scrollTop: 0 }, {
+      complete: () => {
+        this.$backToTop.removeClass('slideUp');
+      }
+    });
+  },
+
   setCustomStyles: function() {
-    "use strict";
     var self = this,
         profile = this.model.get('page').profile;
     //only do the following if page has been set in the model
-    if(profile){
+    if (profile){
       setTheme(profile.primary_color, profile.secondary_color, profile.background_color, profile.text_color);
 
       //set custom color input values
@@ -433,53 +484,52 @@ module.exports = baseVw.extend({
   },
 
   setState: function(state, hash, options) {
-    "use strict";
-    var currentAddress,
+    var currentHandle = this.model.get('page').profile.handle,
         addressState,
-        currentHandle = this.model.get('page').profile.handle,
-        isItemType = false;
+        currentAddress;
 
     options = options || {};
 
-    if(state === "listing"){
+    if (state === "listing"){
       //clear old templates
       this.$el.find('.js-list4').html("");
+      this.tabClick(this.$el.find('.js-storeTab'), this.$el.find('.js-item'));
       this.renderItem(hash);
-      $('#obContainer').scrollTop(352);
-    }else if(state === "listingOld") {
+      this.$obContainer.scrollTop(352);
+    } else if (state === "listingOld") {
       this.tabClick(this.$el.find(".js-storeTab"), this.$el.find(".js-item"));
-      $('#obContainer').scrollTop(352);
-    }else if(state === "listingNew"){
+      this.$obContainer.scrollTop(352);
+    } else if (state === "listingNew"){
       this.tabClick(this.$el.find(".js-storeTab"), this.$el.find(".js-store"));
-      $('#obContainer').scrollTop(352);
+      this.$obContainer.scrollTop(352);
       this.addTabToHistory('listingNew', options.replaceHistory);
       this.sellItem();
-    } else if(state === "createStore") {
+    } else if (state === "createStore") {
       this.tabClick(this.$el.find(".js-aboutTab"), this.$el.find(".js-about"));
       this.addTabToHistory('about', options.replaceHistory);
       this.createStore();
-    } else if(state === "becomeModerator"){
+    } else if (state === "becomeModerator"){
       this.tabClick(this.$el.find(".js-aboutTab"), this.$el.find(".js-about"));
       this.addTabToHistory('about', options.replaceHistory);
       this.showModeratorModal();
-    } else if(state === "customize"){
+    } else if (state === "customize"){
       this.tabClick(this.$el.find(".js-aboutTab"), this.$el.find(".js-about"));
       this.addTabToHistory('about', options.replaceHistory);
       this.customizePage();
-    }else if(state == "store"){
+    } else if (state == "store"){
       //if this page is not a vendor, don't go to their store
-      if(this.model.get('page').profile.vendor){
+      if (this.model.get('page').profile.vendor){
         state="store";
       } else {
         state="about";
       }
       this.tabClick(this.$el.find(".js-" + state + "Tab"), this.$el.find(".js-" + state));
       this.addTabToHistory(state, options.replaceHistory);
-    }else if(state){
+    } else if (state){
       this.tabClick(this.$el.find(".js-" + state + "Tab"), this.$el.find(".js-" + state));
-    }else{
+    } else {
       //if no state was set
-      if(this.model.get('page').profile.vendor){
+      if (this.model.get('page').profile.vendor){
         state="store";
       } else {
         state="about";
@@ -487,31 +537,22 @@ module.exports = baseVw.extend({
       this.tabClick(this.$el.find(".js-" + state + "Tab"), this.$el.find(".js-" + state));
     }
     this.setControls(state);
-    if(state != "customize" && state != this.state && state != "listingNew" && this.state != "listingNew"){
+    if (state != "customize" && state != this.state && state != "listingNew" && this.state != "listingNew"){
       this.lastTab = this.state;
       this.state = state;
     }
 
-    if(state == "listing" || state == "listingOld" || state == "listingNew") {
-      isItemType = true;
-    }
-
-    //set address bar
-    if(isItemType) {
+    if (state == "listing" || state == "listingOld" || state == "listingNew") {
       addressState = "/listing";
+      addressState = hash ? addressState + "/" + hash : addressState;
     } else {
       addressState = "/" + state;
     }
-    currentAddress = this.model.get('page').profile.guid + addressState;
-    currentHandle = currentHandle ? currentHandle + addressState : "";
-    if(isItemType && hash) {
-      currentAddress += "/"+ hash;
-      currentHandle = currentHandle ? currentHandle += "/"+ hash : "";
-    } else if(addressState === "createStore"){
-      currentAddress = this.model.get('page').profile.guid;
-    }
 
-    window.obEventBus.trigger("setAddressBar", {'addressText': currentAddress, 'handle': currentHandle});
+    currentAddress = currentHandle || this.model.get('page').profile.guid;
+    currentAddress += addressState;
+
+    window.obEventBus.trigger("setAddressBar", {'addressText': currentAddress});
   },
 
   setControls: function(state){
@@ -519,35 +560,32 @@ module.exports = baseVw.extend({
     this.$el.find('.js-userPageControls, #customizeControls, .js-itemCustomizationButtons, .js-pageCustomizationButtons').addClass('hide');
     this.$el.find('.js-deleteItem').removeClass('confirm');
     this.$el.find('.js-unfollow').removeClass('confirm');
+    this.$el.find('.js-removemoderator').removeClass('confirm');
     this.$el.find('.user-page-header-slim-bg-cover').removeClass('user-page-header-slim-bg-cover-customize');
-    document.getElementById('obContainer').classList.remove("box-borderDashed");
-    document.getElementById('obContainer').classList.remove("noScrollBar");
-    document.getElementById('obContainer').classList.remove("overflowHidden");
+    this.$obContainer.removeClass("customizeUserPage", "noScrollBar", "overflowHidden");
     //unhide the ones that are needed
-    if(this.options.ownPage === true) {
-      if(state === "listing" || state === "listingOld") {
+    if (this.options.ownPage === true) {
+      if (state === "listing" || state === "listingOld") {
         this.$el.find('.js-itemButtons').removeClass('hide');
-      } else if(state === "listingEdit" || state === "listingNew") {
+      } else if (state === "listingEdit" || state === "listingNew") {
         this.$el.find('.js-itemEditButtons').removeClass('hide');
-      } else if(state === "customize") {
+      } else if (state === "customize") {
         this.$el.find('.js-pageCustomizationButtons').removeClass('hide');
         this.$el.find('#customizeControls').removeClass('hide');
         this.$el.find('.user-page-header-slim-bg-cover').addClass('user-page-header-slim-bg-cover-customize');
-        document.getElementById('obContainer').classList.add("box-borderDashed");
-        document.getElementById('obContainer').classList.add("noScrollBar");
-        document.getElementById('obContainer').classList.add("overflowHidden");
+        this.$obContainer.addClass("customizeUserPage", "noScrollBar", "overflowHidden");
       } else {
         this.$el.find('.js-pageButtons').removeClass('hide');
       }
       //if store has been created, swap create button for sell button
-      if(this.model.get('page').profile.vendor === true) {
+      if (this.model.get('page').profile.vendor === true) {
         this.$el.find('.js-sellItem').removeClass('hide');
         this.$el.find('.js-createStore').addClass('hide');
       } else {
         this.$el.find('.js-sellItem').addClass('hide');
         this.$el.find('.js-createStore').removeClass('hide');
       }
-    }else{
+    } else {
       this.$el.find('.js-notOwnPageButtons').removeClass('hide');
     }
   },
@@ -565,6 +603,22 @@ module.exports = baseVw.extend({
     }
   },
 
+  setFollowingPlaceholder: function(totalLength, currentLength) {
+    if (totalLength > currentLength) {
+      this.$('#inputFollowing').attr('placeholder', window.polyglot.t('SearchForFollowingPlaceholderMore'));
+    } else {
+      this.$('#inputFollowing').attr('placeholder', window.polyglot.t('SearchForFollowingPlaceholder'));
+    }
+  },
+
+  setFollowersPlaceholder: function(totalLength, currentLength) {
+    if (totalLength > currentLength) {
+      this.$('#inputFollowers').attr('placeholder', window.polyglot.t('SearchForFollowersPlaceholderMore'));
+    } else {
+      this.$('#inputFollowers').attr('placeholder', window.polyglot.t('SearchForFollowersPlaceholder'));
+    }
+  },
+
   categoryChanged: function() {
     this.renderItems(this.listings.get('listings'));
   },
@@ -572,7 +626,7 @@ module.exports = baseVw.extend({
   toggleFollowButtons: function(followed) {
     var followBtn = this.$('.js-follow'),
         unfollowBtn = this.$('.js-unfollow');
-    if(followed === true){
+    if (followed === true){
       followBtn.addClass('hide');
       unfollowBtn.removeClass('hide');
     } else {
@@ -583,24 +637,65 @@ module.exports = baseVw.extend({
     unfollowBtn.removeClass('loading');
   },
 
+  toggleModeratorButtons: function(moderated) {
+    var addBtn = this.$('.js-addmoderator'),
+        removeBtn = this.$('.js-removemoderator');
+    if (moderated == true){
+      addBtn.addClass('hide');
+      removeBtn.removeClass('hide');
+    } else {
+      addBtn.removeClass('hide');
+      removeBtn.addClass('hide');
+    }
+    addBtn.removeClass('loading');
+    removeBtn.removeClass('loading');
+  },
+
   fetchListings: function() {
     var self = this;
     this.listings.fetch({
       data: self.userProfileFetchParameters,
-      //timeout: 5000,
       success: function (model) {
         if (self.isRemoved()) return;
         self.cachedListings = model.get('listings'); //cache for rerendering
         self.renderItems(self.cachedListings);
       },
-      error: function (model, response) {
+      error: function () {
         if (self.isRemoved()) return;
-        messageModal.show(window.polyglot.t('errorMessages.notFoundError'), window.polyglot.t('Items'));
+
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.notFoundError'),
+          message: window.polyglot.t('Listings')
+        });
       },
       complete: function (xhr, textStatus) {
         if (textStatus == 'parsererror') {
-          messageModal.show(window.polyglot.t('errorMessages.serverError'), window.polyglot.t('errorMessages.badJSON'));
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.serverError'),
+            message: window.polyglot.t('errorMessages.badJSON')
+          });
+
+          throw new Error("The listings data returned from the API has a parsing error.");
         }
+      }
+    });
+  },
+
+  fetchReviews: function(){
+    var self = this;
+    this.reviews.fetch({
+      data: self.userProfileFetchParameters,
+      success: function(model){
+        if (self.isRemoved()) return;
+        self.renderReviews(model);
+      },
+      error: function () {
+        if (self.isRemoved()) return;
+
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.notFoundError'),
+          message: window.polyglot.t('Reviews')
+        });
       }
     });
   },
@@ -610,15 +705,17 @@ module.exports = baseVw.extend({
     this.following.fetch({
       data: self.userProfileFetchParameters,
       success: function(model){
-        var followingArray = model.get('following');
+        var followingArray = model.get('following') || [];
         if (self.isRemoved()) return;
 
-        if(self.options.ownPage === true){
+        if (self.options.ownPage === true){
           self.ownFollowing = followingArray || [];
           self.ownFollowing = self.ownFollowing.map(function(followingObject){
             return followingObject.guid;
           });
           self.renderFollowing(followingArray);
+          self.setFollowingPlaceholder(followingArray.length, self.ownFollowing.length);
+
           //call followers 2nd so list of following is available
           self.fetchFollowers();
         } else {
@@ -633,13 +730,19 @@ module.exports = baseVw.extend({
               return followingObject.guid;
             });
             self.renderFollowing(followingArray);
+            self.setFollowingPlaceholder(followingArray.length, self.ownFollowing.length);
+
             //call followers 2nd so list of following is available
             self.fetchFollowers();
-            //mark whether page is following you
-            if(Boolean(__.findWhere(followingArray, {guid: self.userID}))){
-              self.$('.js-followsMe').removeClass('hide')
-            }
 
+            //mark whether page is following you
+            if (self.options.ownPage === false && Boolean(__.findWhere(followingArray, {guid: self.userID}))){
+              self.$('.js-followsMe').removeClass('hide');
+            }
+            //mark whether page is being followed
+            if (self.options.ownPage === false){
+              self.toggleFollowButtons(Boolean(__.findWhere(ownFollowingData.following, {guid: self.pageID})));
+            }
           }).fail(function(jqXHR, status, errorThrown){
             if (self.isRemoved()) return;
             console.log(jqXHR);
@@ -648,59 +751,109 @@ module.exports = baseVw.extend({
           });
         }
       },
-      error: function(model, response){
+      error: function(){
         if (self.isRemoved()) return;
-        messageModal.show(window.polyglot.t('errorMessages.notFoundError'), window.polyglot.t('Following'));
+
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.notFoundError'),
+          message: window.polyglot.t('Following')
+        });
       },
       complete: function(xhr, textStatus) {
-        if(textStatus == 'parsererror'){
-          messageModal.show(window.polyglot.t('errorMessages.serverError'), window.polyglot.t('errorMessages.badJSON'));
+        if (textStatus == 'parsererror'){
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.serverError'),
+            message: window.polyglot.t('errorMessages.badJSON')
+          });
+
+          throw new Error("The following data returned from the API has a parsing error.");
         }
       }
     });
   },
 
-  fetchFollowers: function(){
-    var self = this;
+  fetchFollowers: function(ignoreTotal){
+    var self = this,
+        fetchFollowersParameters;
+
+    if (!ignoreTotal && this.followerFetchStart > 0 && this.followerFetchStart >= this.followerFetchTotal){
+      //don't fetch again if all of the followers have been fetched
+      return;
+    }
+
+    if (this.fetchingFollowers){
+      //don't cue up multiple calls
+      return;
+    }
+
+    this.fetchingFollowers = true;
+
+    if (this.options.ownPage){
+      fetchFollowersParameters = $.param({'start': this.followerFetchStart});
+    } else {
+      fetchFollowersParameters = $.param({'guid': this.pageID, 'start': this.followerFetchStart});
+    }
 
     this.followers.fetch({
-      data: self.userProfileFetchParameters,
-      //timeout: 5000,
-      success: function(model){
-        var followerArray = model.get('followers');
+      data: fetchFollowersParameters,
+      success: (model)=> {
+        var followerArray = model.get('followers') || [];
+
+        this.followerFetchTotal = model.get('count') || followerArray.length; //the length is for older servers
+        this.$('.js-userFollowerCount').html(this.followerFetchTotal);
 
         if (self.isRemoved()) return;
 
-        self.renderFollowers(followerArray);
-        //if this is not their page, see if they are being followed
-        if(self.options.ownPage === false){
-          self.toggleFollowButtons(Boolean(__.findWhere(followerArray, {guid: self.userID})));
+        if (followerArray.length || this.followerFetchTotal == 0){
+          //always render the first time so the no followers message is shown for no followers
+          this.renderFollowers(followerArray, this.followerFetchTotal);
+          this.setFollowersPlaceholder(this.followerFetchTotal, this.followerFetchStart);
         }
       },
-      error: function(model, response){
+      error: function(){
         if (self.isRemoved()) return;
-        messageModal.show(window.polyglot.t('errorMessages.notFoundError'), window.polyglot.t('Followers'));
+
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.notFoundError'),
+          message: window.polyglot.t('Followers')
+        });
       },
       complete: function(xhr, textStatus) {
-        if(textStatus == 'parsererror'){
-          messageModal.show(window.polyglot.t('errorMessages.serverError'), window.polyglot.t('errorMessages.badJSON'));
+        self.fetchingFollowers = false;
+        if (textStatus == 'parsererror'){
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.serverError'),
+            message: window.polyglot.t('errorMessages.badJSON')
+          });
+
+          throw new Error("The followers data returned from the API has a parsing error.");
         }
       }
     });
+    this.followerFetchStart += this.followersFetchPer;
+  },
+
+  getIsModerator: function () {
+    this.toggleModeratorButtons(Boolean(__.findWhere(this.model.get('user').moderators, {guid: this.pageID})));
   },
 
   renderItems: function (model, skipNSFWmodal) {
-    "use strict";
-    
-    var self = this;
-    var select = this.$el.find('.js-categories');
+    var self = this,
+        select = this.$el.find('.js-categories'),
+        selectOptions = [],
+        addressCountries = self.options.userModel.get('shipping_addresses').map(function(address){
+          return address.country;
+        }),
+        userCountry = self.options.userModel.get('country');
+
+    addressCountries.push(userCountry);
     skipNSFWmodal = skipNSFWmodal || this.skipNSFWmodal;
     model = model || [];
     __.each(model, function (arrayItem) {
 
-      if(arrayItem.nsfw && !self.showNSFWContent && !self.showNSFW &&!skipNSFWmodal){
+      if (!self.showNSFWContent && !self.showNSFW &&!skipNSFWmodal && arrayItem.nsfw){
         arrayItem.cloak = true;
-      }else{
+      } else {
         arrayItem.cloak = false;
       }
       arrayItem.userCurrencyCode = self.options.userModel.get('currency_code');
@@ -711,55 +864,81 @@ module.exports = baseVw.extend({
       arrayItem.userID = self.pageID;
       arrayItem.ownPage = self.options.ownPage;
       arrayItem.onUserPage = true;
+      arrayItem.userCountries = addressCountries;
       arrayItem.skipNSFWmodal = skipNSFWmodal;
       if (arrayItem.category != "" && self.$el.find('.js-categories option[value="' + arrayItem.category + '"]').length == 0){
-        var opt = document.createElement('option');
-        opt.value = arrayItem.category;
-        opt.innerHTML = arrayItem.category;
-        select.append(opt);
+        selectOptions[arrayItem.category] = true;
       }
-      if(self.options.ownPage === true){
+      if (self.options.ownPage === true){
         arrayItem.imageURL = self.options.userModel.get('serverUrl')+"get_image?hash="+arrayItem.thumbnail_hash;
       } else {
         arrayItem.imageURL = self.options.userModel.get('serverUrl')+"get_image?hash="+arrayItem.thumbnail_hash+"&guid="+self.pageID;
       }
     });
+
+    Object.keys(selectOptions).sort().forEach(function(selectOption) {
+      var opt = document.createElement('option');
+      opt.value = selectOption;
+      opt.innerHTML = selectOption;
+      select.append(opt);
+    });
+
     this.itemList = new itemListView({
-      model: model, 
-      el: '.js-list3', 
-      title: window.polyglot.t('NoListings'), 
+      model: model,
+      el: '.js-list3',
+      title: window.polyglot.t('NoListings'),
       message: "",
-      userModel: this.options.userModel, 
+      userModel: this.options.userModel,
       category: this.$el.find('.js-categories').val()
     });
+
     this.registerChild(this.itemList);
 
     this.$('.js-listingCount').html(model.length);
 
-    if (model.length) {
+    this.listenTo(this.itemList, 'rendered', ()=>{
       this.storeSearch = new window.List('searchStore', {valueNames: ['js-searchTitle'], page: 1000});
-    }
+      var searchTerms = this.$('#inputStore').val();
+      searchTerms && this.storeSearch.search(searchTerms);
+    });
   },
 
-  renderFollowers: function (model) {
-    "use strict";
+  renderReviews: function (model) {
+    model = model || [];
+
+    this.reviewsVw && this.reviewsVw.remove();
+    this.reviewsVw = new reviewsView({
+      collection: model
+    });
+    this.registerChild(this.reviewsVw);
+
+    this.$('.js-list6').html(this.reviewsVw.render().el);
+    this.$('.js-userReviewsCount').html(model.length);
+  },
+
+  renderFollowers: function (model, followerCount) {
 
     model = model || [];
-    this.followerList = new personListView({
-      model: model,
-      el: '.js-list1',
-      title: window.polyglot.t('NoFollowers'),
-      message: "",
-      ownFollowing: this.ownFollowing,
-      hideFollow: true,
-      serverUrl: this.options.userModel.get('serverUrl'),
-      reverse: true
-    });
-    this.registerChild(this.followerList);
-
-    this.$('.js-userFollowerCount').html(model.length);
+    //if view doesn't exist, create it
+    if (!this.followerList) {
+      this.followerList = new personListView({
+        model: model,
+        el: '.js-list1',
+        title: window.polyglot.t('NoFollowers'),
+        message: "",
+        ownFollowing: this.ownFollowing,
+        hideFollow: true,
+        serverUrl: this.options.userModel.get('serverUrl'),
+        reverse: true,
+        followerCount: followerCount
+      });
+      this.registerChild(this.followerList);
+    } else if (model.length) {
+      this.followerList.addUsers(model);
+    }
 
     if (model.length) {
+      //refresh search
       this.followersSearch = new window.List('searchFollowers', {
         valueNames: ['js-searchName', 'js-searchHandle'],
         page: 1000
@@ -770,6 +949,10 @@ module.exports = baseVw.extend({
       var searchTerms = this.$('#inputFollowers').val();
       this.followersSearch.reIndex();
       searchTerms && this.followersSearch.search(searchTerms);
+    });
+
+    this.listenTo(this.followerList, 'fetchMoreUsers', ()=>{
+      this.fetchFollowers();
     });
   },
 
@@ -787,7 +970,7 @@ module.exports = baseVw.extend({
       reverse: true
     });
     this.registerChild(this.followingList);
-    
+
     this.$('.js-userFollowingCount').html(model.length);
 
     if (model.length) {
@@ -797,16 +980,19 @@ module.exports = baseVw.extend({
       });
     }
 
-    this.listenTo(this.followerList, 'usersAdded', ()=>{
+    this.listenTo(this.followingList, 'usersAdded', ()=>{
       var searchTerms = this.$('#inputFollowing').val();
-      this.followingSearch.reIndex();
-      searchTerms && this.followingSearch.search(searchTerms);
+      if (this.followingSearch){
+        this.followingSearch.reIndex();
+        searchTerms && this.followingSearch.search(searchTerms);
+
+        this.setFollowingPlaceholder(model.length, this.followingSearch.size());
+      }
     });
   },
 
 
   setItem: function(hash, onSucceed, afterUpdate){
-    "use strict";
     var self = this;
     this.item = new itemModel({
       userCurrencyCode: self.options.userModel.get('currency_code'),
@@ -825,13 +1011,13 @@ module.exports = baseVw.extend({
     });
     this.item.urlRoot = this.options.userModel.get('serverUrl')+"contracts";
     //remove old item before rendering
-    if(this.itemView){
+    if (this.itemView){
       this.itemView.undelegateEvents();
     }
-    this.itemView = new itemVw({model:this.item, el: '.js-list4', userModel: self.options.userModel, socketView: this.socketView});
+    this.itemView = new itemVw({model: this.item, el: '.js-list4', userModel: self.options.userModel, socketView: this.socketView});
     this.registerChild(this.itemView);
     //set the parameters for the fetch
-    if(this.options.ownPage === true){
+    if (this.options.ownPage === true){
       this.itemFetchParameters = $.param({'id': hash});
     } else {
       this.itemFetchParameters = $.param({'id': hash, 'guid': this.pageID});
@@ -847,19 +1033,27 @@ module.exports = baseVw.extend({
         if (self.options.ownPage === false){
           model.set('imageExtension', "&guid=" + model.get('vendor_offer').listing.id.guid);
         }
-        
-        //model may arrive empty, set this flag to trigger a change event
+
         model.updateAttributes(afterUpdate);
         onSucceed && onSucceed(model, response);
 
       },
-      error: function(model, response){
+      error: function(){
         if (self.isRemoved()) return;
-        messageModal.show(window.polyglot.t('errorMessages.notFoundError'), window.polyglot.t('Item'));
+
+        app.simpleMessageModal.open({
+          title: window.polyglot.t('errorMessages.notFoundError'),
+          message: window.polyglot.t('Listing')
+        });
       },
       complete: function(xhr, textStatus) {
-        if(textStatus == 'parsererror'){
-          messageModal.show(window.polyglot.t('errorMessages.serverError'), window.polyglot.t('errorMessages.badJSON'));
+        if (textStatus == 'parsererror'){
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.serverError'),
+            message: window.polyglot.t('errorMessages.badJSON')
+          });
+
+          throw new Error("The contract data returned from the API has a parsing error.");
         }
       }
     });
@@ -868,20 +1062,19 @@ module.exports = baseVw.extend({
   renderItem: function(hash){
     var self = this;
     this.setItem(hash, function(model, response) {
-          if (response.vendor_offer){
-            self.tabClick(self.$el.find('.js-storeTab'), self.$el.find('.js-item'));
-            self.loadingDeferred.resolve();
-          }else{
-            self.loadingDeferred.reject();
-          }
-        }
+      if (response.vendor_offer){
+        self.loadingDeferred.resolve();
+      } else {
+        self.loadingDeferred.reject();
+      }
+    }
     );
   },
 
   renderItemEdit: function(useCurrentItem, clone){
-    var self = this,
-        hash = "";
-    if(useCurrentItem) {
+    var self = this;
+
+    if (useCurrentItem) {
       //if editing existing product, clone the model
       this.itemEdit = this.item.clone();
 
@@ -894,31 +1087,38 @@ module.exports = baseVw.extend({
       defaultItem.userCurrencyCode = self.options.userModel.get('currency_code');
       defaultItem.vendor_offer.listing.item.price_per_unit.fiat.currency_code =self.options.userModel.get('currency_code');
       defaultItem.vendor_offer.listing.id.guid = self.model.get('page').profile.guid;
+      defaultItem.vendor_offer.listing.item.image_hashes = [];
       this.itemEdit = new itemModel(defaultItem);
     }
     //add the moderator list to the item model
     this.itemEdit.set('moderators', self.model.get('user').moderators);
     //unbind any old view
-    if(this.itemEditView){
+    if (this.itemEditView){
       this.itemEditView.remove();
     }
-    this.itemEditView = new itemEditVw({model:this.itemEdit});
+    this.itemEditView = new itemEditVw({model: this.itemEdit});
     this.$('.js-list5').html('');
     this.$('.js-list5').append(this.itemEditView.$el);
     this.registerChild(this.itemEditView);
     this.listenTo(this.itemEditView, 'saveNewDone', this.saveNewDone);
     self.tabClick(self.$el.find('.js-storeTab'), self.$el.find('.js-itemEdit'));
+
+    this.editing = true;
   },
 
   aboutClick: function(e){
-    "use strict";
     this.tabClick($(e.target).closest('.js-tab'), this.$el.find('.js-about'));
     this.addTabToHistory('about');
     this.setState('about');
   },
 
+  reviewsClick: function(e){
+    this.tabClick($(e.target).closest('.js-tab'), this.$el.find('.js-reviews'));
+    this.addTabToHistory('reviews');
+    this.setState('reviews');
+  },
+
   followersClick: function(e){
-    "use strict";
     this.tabClick($(e.target).closest('.js-tab'), this.$el.find('.js-followers'));
     this.addTabToHistory('followers');
     this.setState('followers');
@@ -926,7 +1126,6 @@ module.exports = baseVw.extend({
   },
 
   followingClick: function(e){
-    "use strict";
     this.tabClick($(e.target).closest('.js-tab'), this.$el.find('.js-following'));
     this.addTabToHistory('following');
     this.setState('following');
@@ -934,8 +1133,6 @@ module.exports = baseVw.extend({
   },
 
   storeClick: function(e){
-    "use strict";
-
     this.tabClick($(e.target).closest('.js-tab'), this.$el.find('.js-store'));
     this.addTabToHistory('store');
     this.setState('store');
@@ -944,11 +1141,11 @@ module.exports = baseVw.extend({
 
   storeTabClick: function(e) {
     if (this.$el.find('.js-categories').val() != "all"){
-        $(".js-categories option[value='all']").attr("selected", "selected");
-        this.categoryChanged();
+      $(".js-categories option[value='all']").attr("selected", "selected");
+      this.categoryChanged();
     }
 
-    this.storeClick(e);    
+    this.storeClick(e);
   },
 
   storeCatClick: function(e) {
@@ -957,41 +1154,38 @@ module.exports = baseVw.extend({
   },
 
   tabClick: function(activeTab, showContent){
-    "use strict";
     this.$('.js-userPageTabs > .js-tab').removeClass('active');
-    activeTab.addClass('active');
     this.$('.js-userPageSubViews > .js-tabTarg').addClass('hide');
+    activeTab.addClass('active');
     showContent.removeClass('hide');
+
+    this.customizing = false;
+    this.editing = false;
   },
 
-  addTabToHistory: function(state, replace){
-    "use strict";
+  addTabToHistory: function(state){
     //add action to history if not an item
     Backbone.history.navigate('#userPage/'+this.model.get('page').profile.guid + "/" + state, { replace: true });
   },
 
   sellItem: function(){
-    "use strict";
     this.renderItemEdit();
     this.setControls("listingEdit");
   },
 
   customizePage: function(){
-    "use strict";
     this.customizing = true;
     this.setControls('customize');
     $('.user-page-content').addClass('pull-up4');
     $('.user-page-header').addClass('shadow-inner1-strong');
-    $('#obContainer').animate({ scrollTop: "0" });
+    this.$obContainer.animate({ scrollTop: "0" });
   },
 
-  hideColorRecommendations: function(e) {
-    "use strict";
-    $('.js-customizeColorRecommendations').removeClass('width270');
+  hideColorRecommendations: function() {
+    $('.js-customizeColorRecommendations').removeClass('show');
   },
 
   clickCustomColorChoice: function(e) {
-    "use strict";
     e.preventDefault();
     e.stopPropagation();
 
@@ -1006,7 +1200,6 @@ module.exports = baseVw.extend({
   },
 
   customizeSelectColor: function(e) {
-    "use strict";
     e.preventDefault();
     e.stopPropagation();
 
@@ -1016,119 +1209,119 @@ module.exports = baseVw.extend({
     }
   },
 
-  displayCustomizePrimaryColor: function(e) {
-    "use strict";
+
+  displayCustomizePrimaryColor: function() {
+    var $customizePrimaryColorRecommendations = this.$el.find('.customizePrimaryColorRecommendations'),
+        $customColorChoice = $customizePrimaryColorRecommendations.find('.customColorChoice');
 
     $('#primary_color').colpickHide();
 
-    if(this.$el.find('.customizePrimaryColorRecommendations').hasClass('width270')){
-      this.$el.find('.customizePrimaryColorRecommendations').removeClass('width270');
-    }else{
+    if ($customizePrimaryColorRecommendations.hasClass('show')){
+      $customizePrimaryColorRecommendations.removeClass('show');
+    } else {
       $('.seeTooltip').hide();
 
       // set recommendations
-      this.$el.find('.customColorChoice').css('background','#fff'); // reset to white to give a cool transition
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:first').css('background','transparent'); // set to transparent
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:nth-child(2)').css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:nth-child(3)').css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:nth-child(4)').css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:nth-child(5)').css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:nth-child(6)').css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
-      this.$el.find('.customizePrimaryColorRecommendations .customColorChoice:last').css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
+      $customColorChoice.css('background', '#fff'); // reset to white to give a cool transition
+      $customColorChoice.first().css('background', 'transparent'); // set to transparent
+
+      for (var i = 2; i <= 6; i++) {
+        $customColorChoice.eq(i).css('background', recommendedPrimaryColors[Math.floor(Math.random() * recommendedPrimaryColors.length)]); // random colors to start
+      }
 
       // slide background_color recommendations out + hide others
-      this.$el.find('.customizePrimaryColorRecommendations').addClass('width270');
-      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeTextColorRecommendations').removeClass('width270');
+      $customizePrimaryColorRecommendations.addClass('show');
+      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('show');
+      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('show');
+      this.$el.find('.customizeTextColorRecommendations').removeClass('show');
     }
   },
 
-  displayCustomizeSecondaryColor: function(e) {
-    "use strict";
-    var primaryColor = this.model.get('page').profile.primary_color;
+  displayCustomizeSecondaryColor: function() {
+    var $customizeSecondaryColorRecommendations = this.$el.find('.customizeSecondaryColorRecommendations'),
+        $customColorChoice = $customizeSecondaryColorRecommendations.find('.customColorChoice'),
+        primaryColor = this.model.get('page').profile.primary_color,
+        shades = [-0.25, -0.15, -0.1, 0.1, 0.15];
 
     $('#secondary_color').colpickHide();
 
-    if(this.$el.find('.customizeSecondaryColorRecommendations').hasClass('width270')){
-      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('width270');
-    }else{
+    if ($customizeSecondaryColorRecommendations.hasClass('show')){
+      $customizeSecondaryColorRecommendations.removeClass('show');
+    } else {
       // set recommendations
-      this.$el.find('.customColorChoice').css('background','#fff');  // reset to white to give a cool transition
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:first').css('background','transparent'); // set to transparent
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:nth-child(2)').css('background', shadeColor2(primaryColor, -0.25)); // 20% lighter than primary_color
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:nth-child(3)').css('background', shadeColor2(primaryColor, -0.15)); // 15% lighter than primary_color
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:nth-child(4)').css('background', shadeColor2(primaryColor, -0.1)); // 10% lighter than primary_color
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:nth-child(5)').css('background', shadeColor2(primaryColor, 0.1)); // 10% darker than primary_color
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:nth-child(6)').css('background', shadeColor2(primaryColor, 0.15)); // 15% darker than primary_color
-      this.$el.find('.customizeSecondaryColorRecommendations .customColorChoice:last').css('background', shadeColor2(primaryColor, 0.20)); // 25% darker than primary_color
+      $customColorChoice.css('background', '#fff');  // reset to white to give a cool transition
+      $customColorChoice.first().css('background', 'transparent'); // set to transparent
+
+      for (var i = 2; i <= 6; i++) {
+        $customColorChoice.eq(i).css('background', shadeColor2(primaryColor, shades[i-2]));
+      }
 
       // slide secondary_color recommendations out + hide others
-      this.$el.find('.customizePrimaryColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeSecondaryColorRecommendations').addClass('width270');
-      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeTextColorRecommendations').removeClass('width270');
+      this.$el.find('.customizePrimaryColorRecommendations').removeClass('show');
+      $customizeSecondaryColorRecommendations.addClass('show');
+      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('show');
+      this.$el.find('.customizeTextColorRecommendations').removeClass('show');
     }
 
   },
 
-  displayCustomizeBackgroundColor: function(e) {
-    "use strict";
-    var secondaryColor = this.model.get('page').profile.secondary_color;
+  displayCustomizeBackgroundColor: function() {
+    var $customizeBackgroundColorRecommendations = this.$el.find('.customizeBackgroundColorRecommendations'),
+        $customColorChoice = $customizeBackgroundColorRecommendations.find('.customColorChoice'),
+        secondaryColor = this.model.get('page').profile.secondary_color,
+        shades = [-0.70, -0.65, -0.55, -0.45, -0.35];
 
     $('#background_color').colpickHide();
 
-    if(this.$el.find('.customizeBackgroundColorRecommendations').hasClass('width270')){
-      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('width270');
-    }else{
+    if ($customizeBackgroundColorRecommendations.hasClass('show')){
+      $customizeBackgroundColorRecommendations.removeClass('show');
+    } else {
       // set recommendations
-      this.$el.find('.customColorChoice').css('background','#fff'); // reset to white to give a cool transition
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:first').css('background','transparent'); // set to transparent
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:nth-child(2)').css('background', shadeColor2(secondaryColor, -0.70)); // 70% darker than primary_color
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:nth-child(3)').css('background', shadeColor2(secondaryColor, -0.65)); // 65% darker than primary_color
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:nth-child(4)').css('background', shadeColor2(secondaryColor, -0.55)); // 55% darker than primary_color
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:nth-child(5)').css('background', shadeColor2(secondaryColor, -0.45)); // 45% darker than primary_color
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:nth-child(6)').css('background', shadeColor2(secondaryColor, -0.35)); // 35% darker than primary_color
-      this.$el.find('.customizeBackgroundColorRecommendations .customColorChoice:last').css('background', shadeColor2(secondaryColor, -0.25)); // 25% darker than primary_color
+      $customColorChoice.css('background', '#fff'); // reset to white to give a cool transition
+      $customColorChoice.first().css('background', 'transparent'); // set to transparent
+
+      for (var i = 2; i <= 6; i++) {
+        $customColorChoice.eq(i).css('background', shadeColor2(secondaryColor, shades[i-2])); // 70% darker than primary_color
+      }
 
       // slide background_color recommendations out + hide others
-      this.$el.find('.customizePrimaryColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeBackgroundColorRecommendations').addClass('width270');
-      this.$el.find('.customizeTextColorRecommendations').removeClass('width270');
+      this.$el.find('.customizePrimaryColorRecommendations').removeClass('show');
+      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('show');
+      $customizeBackgroundColorRecommendations.addClass('show');
+      this.$el.find('.customizeTextColorRecommendations').removeClass('show');
     }
   },
 
-  displayCustomizeTextColor: function(e) {
-    "use strict";
+  displayCustomizeTextColor: function() {
+
+    var $customizeTextColorRecommendations = this.$el.find('.customizeTextColorRecommendations'),
+        $customColorChoice = $customizeTextColorRecommendations.find('.customColorChoice');
 
     $('#text_color').colpickHide();
 
-    if(this.$el.find('.customizeTextColorRecommendations').hasClass('width270')){
-      this.$el.find('.customizeTextColorRecommendations').removeClass('width270');
-    }else{
+    if ($customizeTextColorRecommendations.hasClass('show')){
+      $customizeTextColorRecommendations.removeClass('show');
+    } else {
       // set recommendations
-      this.$el.find('.customColorChoice').css('background','#fff');  // reset to white to give a cool transition
-      this.$el.find('.customizeTextColorRecommendations .customColorChoice:first').css('background','transparent'); // set to transparent
-      this.$el.find('.customizeTextColorRecommendations .customColorChoice:nth-child(2)').css('background', '#ffffff'); 
-      this.$el.find('.customizeTextColorRecommendations .customColorChoice:last').css('background', '#000000');
+      $customColorChoice.css('background', '#fff');  // reset to white to give a cool transition
+      $customColorChoice.first().css('background', 'transparent'); // set to transparent
+      $customColorChoice.eq(2).css('background', '#ffffff');
+      $customColorChoice.last().css('background', '#000000');
 
       // slide background_color recommendations out + hide others
-      this.$el.find('.customizePrimaryColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('width270');
-      this.$el.find('.customizeTextColorRecommendations').addClass('width270');
+      this.$el.find('.customizePrimaryColorRecommendations').removeClass('show');
+      this.$el.find('.customizeSecondaryColorRecommendations').removeClass('show');
+      this.$el.find('.customizeBackgroundColorRecommendations').removeClass('show');
+      $customizeTextColorRecommendations.addClass('show');
     }
   },
 
   customizeColorClick: function(e) {
-    "use strict";
-
     var self = this,
         colorInput = $(e.target).closest('.positionWrapper').find('.js-customizeColorInput'),
         colorKey = colorInput.attr('id'),
         newColor = this.model.get('page').profile[colorKey].slice(1),
-        parent = $('.js-customizeColorRecommendations.width270'),
+        parent = $('.js-customizeColorRecommendations.show'),
         parentHeight = parent.height(),
         topPosition = parent.offset().top + parentHeight + 2;
 
@@ -1136,7 +1329,7 @@ module.exports = baseVw.extend({
       layout: "rgbhex", //can also be full, or hex
       colorScheme: "dark", //can also be light
       submitText: "Submit",
-      onShow: function(el) {
+      onShow: function() {
         var colorKey = $(this).attr('id');
         $(this).colpickSetColor(self.model.get('page').profile[colorKey].slice(1), true);
         $('.colpick').addClass('colpick-customizeColor show').css('top', topPosition);
@@ -1144,29 +1337,29 @@ module.exports = baseVw.extend({
       onSubmit: function(hsb, hex, rgb, el, visible) {
         self.setCustomColor(hex, $(el).attr('id'));
         $(el).closest('.positionWrapper').find('.js-customizeColor').css('background-color', '#' + hex);
-        if(visible) {
+        if (visible) {
           $(el).colpickHide();
         }
-      },
-      onHide: function(){
-        // $('.customizeSecondaryColorRecommendations').hide();
-        // $('.colpick').removeClass('colpick-customizeColor');
       }
+      /*
+      onHide: function(){
+         $('.customizeSecondaryColorRecommendations').hide();
+         $('.colpick').removeClass('colpick-customizeColor');
+      }
+      */
     });
     colorInput.colpickSetColor(newColor, true);
     colorInput.colpickShow();
   },
 
   setCustomColor: function(newColor, colorKey) {
-    "use strict";
-    var tempPage  =  __.clone(this.model.get('page'));
+    var tempPage = __.clone(this.model.get('page'));
     tempPage.profile[colorKey] = '#'+newColor;
     this.model.set('page', tempPage);
     this.setCustomStyles();
   },
 
   uploadUserPageImage: function() {
-    "use strict";
     var self = this;
     //var formData = new FormData(this.$el.find('#userPageImageForm')[0]);
     var serverUrl = self.options.userModel.get('serverUrl'),
@@ -1176,8 +1369,8 @@ module.exports = baseVw.extend({
           originalSize: false
         });
 
-    if(imageURI){
-      imageURI = imageURI.replace(/^data:image\/(png|jpeg);base64,/, "");
+    if (imageURI){
+      imageURI = imageURI.replace(/^data:image\/(png|jpeg|webp);base64,/, "");
       var formData = new FormData();
       formData.append('image', imageURI);
       $.ajax({
@@ -1201,13 +1394,22 @@ module.exports = baseVw.extend({
               self.model.set('page', tempPage);
               self.$el.find('.js-userPageBanner').css('background-image', 'url(' + serverUrl + "get_image?hash=" + imageHash + ')');
               self.saveUserPageModel();
-            }else if (imageHash == "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"){
-              messageModal.show(window.polyglot.t('errorMessages.saveError'), window.polyglot.t('errorMessages.serverError'));
-            }else{
-              messageModal.show(window.polyglot.t('errorMessages.saveError'), window.polyglot.t('errorMessages.serverError'));
+            } else if (imageHash == "b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"){
+              app.simpleMessageModal.open({
+                title: window.polyglot.t('errorMessages.saveError'),
+                message: window.polyglot.t('errorMessages.serverError')
+              });
+            } else {
+              app.simpleMessageModal.open({
+                title: window.polyglot.t('errorMessages.saveError'),
+                message: window.polyglot.t('errorMessages.serverError')
+              });
             }
-          }else if (data.success === false){
-            messageModal.show(window.polyglot.t('errorMessages.serverError'), "<i>" + data.reason + "</i>");
+          } else if (data.success === false){
+            app.simpleMessageModal.open({
+              title: window.polyglot.t('errorMessages.serverError'),
+              message: '<i>' + data.reason + '</i>'
+            });
           }
         },
         error: function (jqXHR, status, errorThrown) {
@@ -1222,29 +1424,31 @@ module.exports = baseVw.extend({
     }
   },
 
+  saveCustomizePageClick: function() {
+    this.saveCustomizePage();
+  },
+
   saveCustomizePage: function() {
-    "use strict";
     this.customizing = false;
     this.uploadUserPageImage();
     $('.js-bannerRangeInput').addClass('hide');
   },
 
   saveUserPageModel: function(){
-    "use strict";
     var self = this,
         formData = new FormData(),
         pageData = this.model.get('page').profile;
 
-    for(var profileKey in pageData) {
-      if(pageData.hasOwnProperty(profileKey)){
+    for (var profileKey in pageData) {
+      if (pageData.hasOwnProperty(profileKey)){
         //don't include nested objects in the form
-        if(pageData[profileKey] !== 'object' && pageData[profileKey]){
-          if(profileKey == 'background_color' || profileKey == 'primary_color' || profileKey == 'text_color' || profileKey == 'secondary_color'){
+        if (pageData[profileKey] !== 'object' && pageData[profileKey]){
+          if (profileKey == 'background_color' || profileKey == 'primary_color' || profileKey == 'text_color' || profileKey == 'secondary_color'){
             //convert hex to decimal
             var profileColor = pageData[profileKey].slice(1);
             profileColor = is.hexColor(profileColor) ? parseInt(profileColor, 16) : profileColor;
             formData.append(profileKey, profileColor);
-          } else if(profileKey == "header" || profileKey == "name" || profileKey == "location") {
+          } else if (profileKey == "header" || profileKey == "name" || profileKey == "location") {
             formData.append(profileKey, String(pageData[profileKey]));
           }
         }
@@ -1260,16 +1464,19 @@ module.exports = baseVw.extend({
       success: function(data) {
         data = JSON.parse(data);
 
-        if(data.success === true){
+        if (data.success === true){
           if (!self.isRemoved()) {
             self.setCustomStyles();
             self.setState(self.lastTab);
           }
 
           //refresh the universal profile model
-          self.globalUserProfile.fetch();
-        }else if(data.success === false && !self.isRemoved()){
-          messageModal.show(window.polyglot.t('errorMessages.serverError'), "<i>" + data.reason + "</i>");
+          //self.globalUserProfile.fetch();
+        } else if (data.success === false && !self.isRemoved()){
+          app.simpleMessageModal.open({
+            title: window.polyglot.t('errorMessages.serverError'),
+            message: '<i>' + data.reason + '</i>'
+          });
         }
       },
       error: function(jqXHR, status, errorThrown){
@@ -1283,21 +1490,22 @@ module.exports = baseVw.extend({
   },
 
   cancelCustomizePage: function() {
-    "use strict";
     //refresh the current page
     Backbone.history.loadUrl();
   },
 
   saveNewDone: function(newHash) {
-    "use strict";
     this.setState('listing', newHash);
     this.fetchListings();
+
+    this.editing = false;
   },
 
   cancelClick: function(){
-    "use strict";
     this.setState(this.lastTab);
-    $('#obContainer').animate({ scrollTop: 0 });
+    this.$obContainer.animate({ scrollTop: 0 });
+
+    this.editing = false;
   },
 
   editItem: function(clone){
@@ -1306,7 +1514,7 @@ module.exports = baseVw.extend({
     this.lastTab = "listingOld";
   },
 
-  editItemClick: function(e){
+  editItemClick: function(){
     this.editItem();
   },
 
@@ -1315,16 +1523,14 @@ module.exports = baseVw.extend({
   },
 
   deleteItemClick: function(){
-    "use strict";
     this.deleteItem(true);
   },
 
   deleteItem: function(confirm, id){
-    "use strict";
     var self=this,
         deleteID = id || this.item.get('id');
 
-    if(this.confirmDelete === false && confirm){
+    if (this.confirmDelete === false && confirm){
       this.$el.find('.js-deleteItem').addClass('confirm');
       this.confirmDelete = true;
     } else {
@@ -1335,7 +1541,7 @@ module.exports = baseVw.extend({
           if (self.isRemoved()) return;
 
           //destroy the model. Do it this way because the server can't accept a standard destroy call, and we don't want to call the server twice.
-          if(self.item){
+          if (self.item){
             self.item.trigger('destroy', self.item);
           }
           self.fetchListings();
@@ -1351,36 +1557,41 @@ module.exports = baseVw.extend({
     }
   },
 
-  saveItem: function(e){
-    if(this.itemEditView) {
-      $(e.target).addClass('loading');
-      
-      this.itemEditView.saveChanges().always(() => $(e.target).removeClass('loading'))
-        .fail(() => {
-          var $firstErr = this.$('.js-itemEdit .invalid, .js-itemEdit :invalid').not('form').eq(0);
+  saveItemClick: function() {
+    this.saveItem();
+  },
 
-          $firstErr.length && $firstErr[0].scrollIntoViewIfNeeded();
-        });
+  saveItem: function(){
+    if (this.itemEditView) {
+      var $saveBtn = this.$('.js-saveItem');
+
+      $saveBtn.addClass('loading');
+
+      this.itemEditView.saveChanges().always(() => $saveBtn.removeClass('loading'))
+      .fail(() => {
+        var $firstErr = this.$('.js-itemEdit .invalid, .js-itemEdit :invalid').not('form').eq(0);
+
+        $firstErr.length && $firstErr[0].scrollIntoViewIfNeeded();
+      });
     }
   },
 
   createStore: function() {
-    "use strict";
-    var self = this,
-        storeWizardModel = new Backbone.Model();
+    var storeWizardModel = new Backbone.Model();
+
     storeWizardModel.set(this.model.attributes);
-    $('#modalHolder').fadeIn(300);
+    this.storeWizardView && this.storeWizardView.remove();
     this.storeWizardView = new storeWizardVw({
-      model:storeWizardModel,
-      parentEl: '#modalHolder',
+      model: storeWizardModel,
       socketView: this.socketView
-    });
+    }).on('close', () => this.storeWizardView.remove())
+      .render()
+      .open();
     this.listenTo(this.storeWizardView, 'storeCreated', this.storeCreated);
     this.registerChild(this.storeWizardView);
   },
 
   storeCreated: function() {
-    "use strict";
     //recreate the entire page with the new data
     Backbone.history.loadUrl();
   },
@@ -1397,10 +1608,10 @@ module.exports = baseVw.extend({
   unfollowUserClick: function(e){
     var $targ = $(e.target).closest('.js-unfollow');
 
-    if($targ.hasClass('confirm')){
+    if ($targ.hasClass('confirm')){
       $targ.addClass('loading').removeClass('confirm');
       this.unfollowUser({'guid': this.pageID}).fail(() => {
-        $(e.target).removeClass('loading')
+        $(e.target).removeClass('loading');
       });
     } else {
       $targ.addClass('confirm');
@@ -1408,22 +1619,80 @@ module.exports = baseVw.extend({
 
   },
 
+  addModeratorClick: function(e){
+    var $targ = $(e.target).closest('.js-addmoderator'),
+        self = this,
+        modList = {};
+
+    $targ.addClass('loading');
+
+    modList.moderators = this.model.get('user').moderator_guids;
+    modList.moderators.push(this.pageID);
+
+    saveToAPI('', this.model.get('user'), this.model.get('user').serverUrl + "settings",
+      function(){
+        // confirmed
+        self.options.userModel.fetch({
+          success: function(model) {
+            if (self.isRemoved()) return;
+            self.model.set('user', model.toJSON());
+            self.getIsModerator();
+          }
+        });
+      }, '', modList, '', '').always(function(){
+        $targ.removeClass('loading');
+      });
+  },
+
+  removeModeratorClick: function(e){
+    var $targ = $(e.target).closest('.js-removemoderator'),
+        self = this,
+        modList = {};
+
+    if ($targ.hasClass('confirm')){
+      $targ.addClass('loading').removeClass('confirm');
+
+      modList.moderators = __.without(this.model.get('user').moderator_guids, self.pageID);
+
+      saveToAPI('', this.model.get('user'), this.model.get('user').serverUrl + "settings",
+        function(){
+          // confirmed
+          self.options.userModel.fetch({
+            success: function(model) {
+              if (self.isRemoved()) return;
+              self.model.set('user', model.toJSON());
+              self.getIsModerator();
+            }
+          });
+        }, '', modList, '', '').always(function(){
+          $targ.removeClass('loading');
+        });
+    } else {
+      $targ.addClass('confirm');
+    }
+
+  },
+
   moreButtonsOwnPageClick: function(){
-    if ($('.js-extraButtonsOwnPage').hasClass('hide')){
-      $('.js-extraButtonsOwnPage').removeClass('hide');
-      $('.js-moreButtonsOwnPage').html('x');
-    }else{
-      $('.js-extraButtonsOwnPage').addClass('hide');
-      $('.js-moreButtonsOwnPage').html('...');
+    var extBtn = $('.js-extraButtonsOwnPage'),
+        moreExtBtn = $('.js-moreButtonsOwnPage');
+    if (extBtn.hasClass('hide')){
+      extBtn.removeClass('hide');
+      moreExtBtn.html('x');
+    } else {
+      extBtn.addClass('hide');
+      moreExtBtn.html('...');
     }
   },
   moreButtonsNotOwnPageClick: function(){
-    if ($('.js-extraButtonsNotOwnPage').hasClass('hide')){
-      $('.js-extraButtonsNotOwnPage').removeClass('hide');
-      $('.js-moreButtonsNotOwnPage').html('x');
-    }else{
-      $('.js-extraButtonsNotOwnPage').addClass('hide');
-      $('.js-moreButtonsNotOwnPage').html('...');
+    var extBtn = $('.js-extraButtonsNotOwnPage'),
+        moreExtBtn = $('.js-moreButtonsNotOwnPage');
+    if (extBtn.hasClass('hide')){
+      extBtn.removeClass('hide');
+      moreExtBtn.html('x');
+    } else {
+      extBtn.addClass('hide');
+      moreExtBtn.html('...');
     }
   },
 
@@ -1435,7 +1704,7 @@ module.exports = baseVw.extend({
       data: {'guid': options.guid},
       dataType: 'json',
       url: this.options.userModel.get('serverUrl') + "follow",
-      success: function(data) {
+      success: function() {
         if (self.isRemoved()) return;
         self.fetchFollowing();
       },
@@ -1450,7 +1719,7 @@ module.exports = baseVw.extend({
 
   unfollowUser: function(options){
     var self = this;
-    
+
     return $.ajax({
       type: "POST",
       data: {'guid': options.guid},
@@ -1476,14 +1745,20 @@ module.exports = baseVw.extend({
   },
 
   showModeratorModal: function(){
-    var self = this;
-
-    this.moderatorSettingsView = new moderatorSettingsVw({model:this.model, parentEl: '#modalHolder'});
-    this.registerChild(this.moderatorSettingsView);
+    if (this.moderatorSettingsModal) {
+      this.moderatorSettingsModal.open();
+    } else {
+      this.moderatorSettingsModal = new ModeratorSettingsModal({ model: this.model });
+      this.registerChild(this.moderatorSettingsModal);
+      this.moderatorSettingsModal.render()
+        .on('close', () => {
+          this.moderatorSettingsModal.remove();
+          this.moderatorSettingsModal = null;
+        }).open();
+    }
   },
 
   changeModeratorStatus: function(status, fee){
-    "use strict";
     //set new moderator values without a fetch
     var tempPage = __.clone(this.model.get('page'));
     tempPage.profile.moderator = status;
@@ -1491,7 +1766,7 @@ module.exports = baseVw.extend({
     this.model.set('page', tempPage);
 
     //set button state without re-rendering
-    if(status){
+    if (status){
       this.$('.js-userPageEditModerator').removeClass('hide');
       this.$('.js-userPageBecomeModerator').addClass('hide');
     } else {
@@ -1500,7 +1775,7 @@ module.exports = baseVw.extend({
     }
   },
 
-  blockUserClick: function(e) {
+  blockUserClick: function() {
     this.options.userModel.blockUser(this.userProfile.get('profile').guid);
     this.renderUserBlocked();
   },
@@ -1508,10 +1783,10 @@ module.exports = baseVw.extend({
   renderUserBlocked: function() {
     this.$('.js-unblock').removeClass('hide');
     this.$('.js-block').addClass('hide');
-    this.hideThisUser();
+    this.hideThisUser('blocked');
   },
 
-  unblockUserClick: function(e) {
+  unblockUserClick: function() {
     this.options.userModel.unblockUser(this.userProfile.get('profile').guid);
     this.renderUserUnblocked();
   },
@@ -1519,41 +1794,53 @@ module.exports = baseVw.extend({
   renderUserUnblocked: function() {
     this.$('.js-unblock').addClass('hide');
     this.$('.js-block').removeClass('hide');
-  },  
+  },
 
   hideThisUser: function(reason){
-    this.$('.js-blockedWarning').fadeIn(100);
-    this.$('.js-mainContainer').addClass('blurMore');
-    if(reason == "blocked"){
-      this.$('.js-reasonBlocked').removeClass('hide');
-      this.$('.js-reasonNSFW').addClass('hide');
-    } else if(reason == 'nsfw'){
-      this.$('.js-reasonBlocked').addClass('hide');
-      this.$('.js-reasonNSFW').removeClass('hide');
-    }
-  },
+    this.hiddenWarningModal && this.hiddenWarningModal.remove();
 
-  clickShowNSFWContent: function(){
-    this.showNSFWContent = true;
-    this.showNSFW = true;
-    this.showBlockedUser();
-    if(this.state == "listing"){
-      this.renderItem(this.currentItemHash);
-    }
-    this.renderItems(this.cachedListings, true);
-  },
+    if (reason == 'blocked') {
+      this.hiddenWarningModal = new HiddenWarningModal();
+      this.registerChild(this.hiddenWarningModal);
+      this.hiddenWarningModal.render()
+        .open()
+        .on('showPage', () => {
+          this.hiddenWarningModal.remove();
+          this.needsBlockedWarning = false;
+          this.needsNSFWWarning && this.hideThisUser('nsfw');
+        });
+    } else if (reason == 'nsfw') {
+      this.hiddenWarningModal = new HiddenWarningModal({
+        reason: 'nsfw'
+      });
+      this.registerChild(this.hiddenWarningModal);
 
-  showBlockedUser: function(){
-    this.$('.js-blockedWarning').fadeOut(300);
-    this.$('.js-mainContainer').removeClass('blurMore');
+      this.hiddenWarningModal.render()
+        .open()
+        .on('showPage', () => {
+          this.hiddenWarningModal.remove();
+          this.needsNSFWWarning = false;
+          this.showNSFWContent = true;
+          this.showNSFW = true;
+
+          if (this.state == "listing") {
+            this.renderItem(this.currentItemHash);
+          }
+
+          this.renderItems(this.cachedListings, true);
+          this.needsBlockedWarning && this.hideThisUser('blocked');
+        });
+    }
   },
 
   remove: function(){
-    baseVw.prototype.remove.apply(this, arguments);
-
     // close colorbox to make sure the overlay doesnt remain open when going to a different page
-    $.colorbox.close();
-    messageModal.$el.off('click', this.modalCloseHandler);
+    //$.colorbox.close();
+    $('#obContainer').off('scroll', this.onScroll).removeClass('customizeUserPage ');
+
+    pageVw.prototype.remove.apply(this, arguments);
   }
 
 });
+
+module.exports = UserPageVw;
